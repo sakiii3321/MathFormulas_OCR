@@ -1,0 +1,1 @@
+"""Formula OCR desktop application."""

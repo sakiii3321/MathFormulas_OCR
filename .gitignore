@@ -1,0 +1,13 @@
+.venv/
+.tmp/
+__pycache__/
+.pytest_cache/
+build/
+dist/
+*.spec
+artifacts/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
