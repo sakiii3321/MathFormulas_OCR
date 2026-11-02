@@ -15,6 +15,10 @@
 
 ## 安装与启动
 
+**直接下载 Windows 版**：打开 [Formula OCR 1.0 Release](https://github.com/sakiii3321/MathFormulas_OCR/releases/tag/v1.0)，在 **Assets** 中下载 [FormulaOCR-1.0-Windows-x64.exe](https://github.com/sakiii3321/MathFormulas_OCR/releases/download/v1.0/FormulaOCR-1.0-Windows-x64.exe)，双击即可启动。首次使用在「API 设置」中配置视觉模型。单文件版启动时需要展开内置的 Qt 运行组件，请稍候。
+
+### 从源码运行
+
 需要 Windows 10 或 11 和 64 位 Python。建议使用 Python 3.12，确保 PowerShell 中可以运行 `python --version`。
 
 ```powershell
@@ -81,7 +85,7 @@ $$
 .\build.cmd
 ```
 
-自动测试使用模拟 API 响应，无需真实密钥。打包完成后，从 `dist\FormulaOCR\FormulaOCR.exe` 启动。分发时请一起提供整个 `dist\FormulaOCR` 目录。
+自动测试使用模拟 API 响应，无需真实密钥。默认目录版从 `dist\FormulaOCR\FormulaOCR.exe` 启动，分发时请提供整个 `dist\FormulaOCR` 目录。运行 `build.cmd onefile` 可生成可单独分发的 `dist\FormulaOCR.exe`。
 
 ## 许可证
 
