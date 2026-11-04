@@ -1,5 +1,6 @@
 """Interactive Windows integration check using only a synthetic formula and mock OCR."""
 import ctypes
+import os
 from ctypes import wintypes
 from pathlib import Path
 import sys
@@ -11,13 +12,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from PySide6.QtCore import QMimeData, QPoint, QSettings, QTimer, Qt
 from PySide6.QtGui import QImage
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import QApplication, QLabel, QSystemTrayIcon
 
-from formula_ocr.app import Window, STYLE, PreferencesDialog
+from formula_ocr.app import Window, STYLE
 
 app = QApplication([])
 app.setStyle('Fusion')
 app.setStyleSheet(STYLE)
+app.setQuitOnLastWindowClosed(False)
 backup = QMimeData()
 original = app.clipboard().mimeData()
 for fmt in original.formats():
@@ -32,7 +34,10 @@ settings.setValue('copy/enabled', True)
 settings.setValue('copy/format', '$ … $')
 mock_ocr = patch('formula_ocr.app.recognize', return_value='E=mc^2')
 recognize = mock_ocr.start()
-window = Window(settings)
+backend = 'webview2' if '--webview2' in sys.argv else 'qt'
+if backend == 'webview2':
+    os.environ['WEBVIEW2_USER_DATA_FOLDER'] = str(Path('.tmp/capture-webview2-profile').resolve())
+window = Window(settings, preview_backend=backend)
 window.show()
 marker = QLabel('E = mc²', None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
 marker.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -48,7 +53,7 @@ user32.PostThreadMessageW.restype = wintypes.BOOL
 kernel32 = ctypes.WinDLL('kernel32')
 kernel32.GetCurrentThreadId.restype = wintypes.DWORD
 thread_id = kernel32.GetCurrentThreadId()
-phase = 'select'
+phase = 'cancel_escape'
 finished = False
 
 
@@ -59,7 +64,7 @@ def finish(code):
     finished = True
     if window.capturing:
         window.capture.cancel()
-    window.close()
+    window.quit_application()
     marker.close()
     app.clipboard().setMimeData(backup)
     mock_ocr.stop()
@@ -68,6 +73,10 @@ def finish(code):
 
 def send_hotkey():
     try:
+        assert QSystemTrayIcon.isSystemTrayAvailable(), 'Windows system tray is unavailable'
+        assert window.tray.isVisible(), 'Tray icon is not registered'
+        window.close()
+        assert not window.isVisible() and not window.closing, 'Close did not hide to tray'
         assert window.hotkey.id is not None, 'Native shortcut registration failed'
         # Deliver an actual Windows hotkey message without synthesizing user keystrokes.
         assert user32.PostThreadMessageW(thread_id, 0x0312, window.hotkey.id, 0)
@@ -81,7 +90,7 @@ def send_hotkey():
 def step():
     global phase
     try:
-        if phase in ('select', 'cancel'):
+        if phase in ('select', 'cancel_escape', 'cancel_right', 'exit_capture'):
             assert window.capturing and window.capture.overlays, 'Hotkey did not open capture overlay'
             overlay = next(item for item in window.capture.overlays if item.geometry().contains(center))
             if phase == 'select':
@@ -93,24 +102,33 @@ def step():
                 marker.hide()
                 phase = 'recognized'
                 QTimer.singleShot(700, step)
+            elif phase == 'exit_capture':
+                window.tray_exit_action.trigger()
+                assert window.closing and window.hotkey.id is None
+                assert not window.capturing and not window.capture.overlays
+                assert not window.isVisible()
+                assert recognize.call_count == 1
+                print('PASS: close to tray, background hotkey, Escape/right-click stay hidden, screenshot restores window, mock OCR/auto-copy, tray restore and exit during capture.', flush=True)
+                finish(0)
             else:
                 old_png = window.png
-                QTest.keyClick(overlay, Qt.Key.Key_Escape)
+                old_text = window.editor.toPlainText()
+                old_clipboard = app.clipboard().text()
+                if phase == 'cancel_escape':
+                    QTest.keyClick(overlay, Qt.Key.Key_Escape)
+                else:
+                    QTest.mouseClick(overlay, Qt.MouseButton.RightButton)
                 assert not window.capturing
+                assert not window.isVisible(), 'Cancelled background capture showed the window'
                 assert window.png == old_png
-                assert window.editor.toPlainText() == 'E=mc^2'
-                assert app.clipboard().text() == '$E=mc^2$'
-                assert recognize.call_count == 1
-                dialog = PreferencesDialog(window)
-                dialog.show()
-                app.processEvents()
-                Path('artifacts').mkdir(exist_ok=True)
-                dialog.grab().save('artifacts/preferences-preview.png')
-                dialog.close()
-                print('PASS: native hotkey message, screen crop, mock OCR, automatic copy, Escape cancellation.', flush=True)
-                finish(0)
+                assert window.editor.toPlainText() == old_text
+                assert app.clipboard().text() == old_clipboard
+                assert recognize.call_count == 0
+                phase = 'cancel_right' if phase == 'cancel_escape' else 'select'
+                send_hotkey()
         elif phase == 'recognized':
             assert window.worker and not window.worker.isRunning()
+            assert window.isVisible() and not window.isMinimized(), 'Successful capture did not restore window'
             assert app.clipboard().text() == '$E=mc^2$'
             assert window.editor.toPlainText() == 'E=mc^2'
             captured = QImage.fromData(window.png)
@@ -119,7 +137,11 @@ def step():
             assert recognize.call_count == 1
             # The only image passed to mock OCR is the cropped synthetic formula.
             assert recognize.call_args.args[0] == window.png
-            phase = 'cancel'
+            window.close()
+            assert not window.isVisible()
+            window.tray_menu.actions()[0].trigger()
+            assert window.isVisible()
+            phase = 'exit_capture'
             send_hotkey()
     except Exception:
         import traceback
@@ -130,5 +152,13 @@ def step():
 QTimer.singleShot(1000, send_hotkey)
 QTimer.singleShot(20000, lambda: finish(2))
 exit_code = app.exec()
+if exit_code == 0:
+    # Qt asks visible windows to close during quit; they must accept the final exit.
+    window.show()
+    QTimer.singleShot(100, window.quit_application)
+    QTimer.singleShot(3000, lambda: app.exit(3))
+    exit_code = app.exec()
+    if exit_code == 0:
+        print('PASS: explicit exit also terminates with the main window visible.', flush=True)
 temp.cleanup()
 sys.exit(exit_code)

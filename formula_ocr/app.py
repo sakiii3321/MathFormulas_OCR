@@ -7,16 +7,15 @@ from PySide6.QtCore import QBuffer, QIODevice, QSettings, QTemporaryDir, QUrl, Q
 from PySide6.QtGui import QColor, QIcon, QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtSvgWidgets import QSvgWidget
 from PySide6.QtWidgets import (QApplication, QCheckBox, QDialog, QDialogButtonBox,
-    QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
-    QKeySequenceEdit, QPlainTextEdit, QProgressBar, QScrollArea, QSizePolicy, QSplitter, QTabBar, QVBoxLayout, QWidget)
-from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWebEngineCore import QWebEngineSettings
+    QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
+    QKeySequenceEdit, QPlainTextEdit, QProgressBar, QScrollArea, QSizePolicy, QSplitter, QSystemTrayIcon, QTabBar, QVBoxLayout, QWidget)
 
 from .core import endpoint, export_text, mathml, recognize
 from .capture import ScreenCapture
 from .clipboard import CODE_FORMATS, COPY_FORMATS, WORD_FORMAT, copy_formula, copy_mixed
 from .hotkey import DEFAULT_HOTKEY, GlobalHotkey
 from .providers import PROVIDERS
+from .preview import create_preview
 from .theme import (ASSETS, STYLE, ActionButton, FieldSelect, apply_theme, field_map,
                     paper_section, preview_css, theme_colors, tool_icon)
 from .mixed import (MIXED_FORMATS, MIXED_COPY_FORMATS, MIXED_WORD, MIXED_EXAMPLE,
@@ -147,7 +146,7 @@ class PreferencesDialog(QDialog):
         self.hotkey = QKeySequenceEdit(QKeySequence(parent.settings.value("capture/hotkey", DEFAULT_HOTKEY)))
         self.hotkey.setMaximumSequenceLength(1)
         form.addRow("全局截图快捷键", self.hotkey)
-        help_text = QLabel("点击输入框后按下新组合键，须包含 Ctrl 或 Alt。\n程序运行或最小化时有效；截图后会自动调用 API 识别。\n按 Esc 或右键取消截图，不会发送图片。")
+        help_text = QLabel("点击输入框后按下新组合键，须包含 Ctrl 或 Alt。\n关闭窗口后驻留系统托盘，快捷键仍然有效。\n截图后显示窗口并自动识别；在后台取消截图则保持隐藏。\n按 Esc 或右键取消截图，不会发送图片。")
         help_text.setWordWrap(True)
         form.addRow(help_text)
         self.auto_copy = QCheckBox("识别成功后自动复制")
@@ -248,9 +247,11 @@ class ImagePane(QScrollArea):
 
 
 class Window(QMainWindow):
-    def __init__(self, settings=None):
+    def __init__(self, settings=None, preview_backend="qt"):
         super().__init__()
         self.setWindowTitle("Formula OCR · AI 公式识别")
+        if preview_backend == "webview2":
+            self.setWindowTitle("Formula OCR · WebView2 轻量版")
         self.setWindowIcon(QIcon(str(ASSETS / "formula-ocr.ico")))
         available = self.screen().availableGeometry()
         self.resize(min(1200, available.width() - 24), min(840, available.height() - 56))
@@ -275,6 +276,10 @@ class Window(QMainWindow):
         self.capture.completed.connect(self.capture_completed)
         self.capture.cancelled.connect(self.capture_cancelled)
         self.capture.failed.connect(self.capture_failed)
+        self.capture_delay = QTimer(self)
+        self.capture_delay.setSingleShot(True)
+        self.capture_delay.setInterval(220)
+        self.capture_delay.timeout.connect(self.capture.start)
         self.hotkey = GlobalHotkey(self.start_capture)
         QApplication.instance().aboutToQuit.connect(self.hotkey.close)
         self.terrain = QSvgWidget()
@@ -375,9 +380,7 @@ class Window(QMainWindow):
         splitter.addWidget(paper_section(QLabel("原图"), QLabel("截图、粘贴或导入图片"), self.drop,
                                          self.example_button, self.run_button))
 
-        self.preview = QWebEngineView()
-        self.preview.settings().setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, False)
-        self.preview.settings().setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, False)
+        self.preview = create_preview(preview_backend)
         preview_frame = QFrame()
         preview_frame.setObjectName("previewFrame")
         preview_frame.setMinimumHeight(76)
@@ -439,6 +442,7 @@ class Window(QMainWindow):
         self.night_switch.toggled.connect(self.change_appearance)
         if self.credential_error:
             self.status.setText("无法读取已保存的密钥，请在 API 设置中重新输入。")
+        self.setup_tray()
         try:
             self.hotkey.register(self.settings.value("capture/hotkey", DEFAULT_HOTKEY))
         except ValueError as exc:
@@ -453,6 +457,47 @@ class Window(QMainWindow):
         result = ActionButton(text)
         result.clicked.connect(callback)
         return result
+
+    def setup_tray(self):
+        self.tray = QSystemTrayIcon(self.windowIcon(), self)
+        self.tray_menu = QMenu(self)
+        self.tray_menu.addAction("显示主窗口", self.show_main_window)
+        self.tray_menu.addAction("截图识别", self.start_capture)
+        self.tray_menu.addSeparator()
+        self.tray_exit_action = self.tray_menu.addAction("退出程序", self.quit_application)
+        self.tray.setContextMenu(self.tray_menu)
+        self.tray.activated.connect(self.tray_activated)
+        self.tray.messageClicked.connect(self.show_main_window)
+        QApplication.instance().aboutToQuit.connect(self.tray.hide)
+        self.tray_notice_shown = False
+        self.tray.show()
+
+    def tray_activated(self, reason):
+        if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
+            self.show_main_window()
+
+    def show_main_window(self):
+        if self.capturing or self.closing:
+            return
+        self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def quit_application(self):
+        self.closing = True
+        self.hotkey.close()
+        self.capture_delay.stop()
+        if self.capturing:
+            self.capture.cancel()
+        if self.worker and self.worker.isRunning():
+            message = "等待当前请求结束后退出（最长约 135 秒）…"
+            self.status.setText(message)
+            self.tray.setToolTip("Formula OCR · " + message)
+            self.tray_exit_action.setEnabled(False)
+            return
+        self.tray.hide()
+        QApplication.instance().quit()
 
     def eventFilter(self, obj, event):
         from PySide6.QtCore import QEvent
@@ -513,6 +558,7 @@ class Window(QMainWindow):
         shortcut = self.hotkey.sequence if self.hotkey.id is not None else "快捷键未启用"
         self.capture_button.setToolTip(f"{shortcut}：框选后自动识别；Esc / 右键取消")
         self.shortcut_label.setText(shortcut if self.hotkey.id is not None else "")
+        self.tray.setToolTip(f"Formula OCR · {shortcut}\n点击显示窗口，右键打开菜单")
 
     def start_capture(self):
         if self.capturing or self.closing or QApplication.activeModalWidget() is not None:
@@ -521,33 +567,35 @@ class Window(QMainWindow):
             self.status.setText("当前正在识别，请完成后再截图。")
             return
         self.capturing = True
+        self.capture_window_visible = self.isVisible()
         self.capture_window_state = self.windowState()
         self.capture_quit_policy = QApplication.instance().quitOnLastWindowClosed()
         QApplication.instance().setQuitOnLastWindowClosed(False)
         self.hide()
         # Let Windows repaint the desktop after hiding our own window.
-        QTimer.singleShot(220, self.capture.start)
+        self.capture_delay.start()
 
     def restore_after_capture(self, cancelled=False):
+        self.capture_delay.stop()
         self.capturing = False
-        state = self.capture_window_state
-        if not cancelled:
-            state &= ~Qt.WindowState.WindowMinimized
-        self.setWindowState(state)
-        self.show()
-        if not cancelled:
-            self.raise_()
-            self.activateWindow()
+        if not self.closing:
+            if not cancelled:
+                self.setWindowState(self.capture_window_state & ~Qt.WindowState.WindowMinimized)
+                self.show_main_window()
+            elif self.capture_window_visible:
+                self.setWindowState(self.capture_window_state)
+                self.show()
         QApplication.instance().setQuitOnLastWindowClosed(self.capture_quit_policy)
 
     def capture_completed(self, image):
         self.restore_after_capture()
-        if self.load_image(image):
+        if not self.closing and self.load_image(image):
             self.start_recognition()
 
     def capture_cancelled(self):
         self.restore_after_capture(cancelled=True)
-        self.status.setText("已取消截图。")
+        if not self.closing:
+            self.status.setText("已取消截图。")
 
     def capture_failed(self, message):
         self.restore_after_capture()
@@ -648,7 +696,7 @@ class Window(QMainWindow):
     def finished(self):
         self.set_busy(False)
         if self.closing:
-            self.close()
+            self.quit_application()
 
     def error(self, message):
         self.status.setText(message)
@@ -742,26 +790,33 @@ class Window(QMainWindow):
                 self.error("导出失败：" + str(exc))
 
     def closeEvent(self, event):
-        if self.capturing:
-            event.ignore()
-            return
-        if self.worker and self.worker.isRunning():
-            self.closing = True
-            self.status.setText("等待当前请求结束后关闭（最长约 135 秒）…")
-            event.ignore()
-        else:
-            self.hotkey.close()
+        # QApplication.quit() closes visible windows; permit that final close.
+        if self.closing and not (self.worker and self.worker.isRunning()):
             event.accept()
+            return
+        event.ignore()
+        if self.capturing or self.closing:
+            return
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            self.quit_application()
+            return
+        self.hide()
+        if not self.tray_notice_shown:
+            self.tray_notice_shown = True
+            self.tray.showMessage("Formula OCR 已在后台运行",
+                                  "截图快捷键仍然有效。点击托盘图标显示窗口，右键菜单可退出程序。",
+                                  QSystemTrayIcon.MessageIcon.Information, 4000)
 
 
 
 
-def main():
+def main(preview_backend="qt"):
     if sys.platform == "win32":
         from ctypes import windll
         windll.shell32.SetCurrentProcessExplicitAppUserModelID("FormulaOCR.Desktop")
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    window = Window()
+    app.setQuitOnLastWindowClosed(False)
+    window = Window(preview_backend=preview_backend)
     window.show()
     sys.exit(app.exec())

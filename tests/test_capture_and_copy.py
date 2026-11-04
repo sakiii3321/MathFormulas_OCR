@@ -6,7 +6,7 @@ import pytest
 from PySide6.QtCore import QMimeData, QPoint, QRectF, QSizeF, QSettings, Qt
 from PySide6.QtGui import QImage, QKeySequence, QPixmap
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QWidget
 
 from formula_ocr.app import PreferencesDialog, Window
 from formula_ocr.capture import SelectionOverlay, crop_selection
@@ -124,13 +124,20 @@ class FakePreview(QWidget):
 def window(tmp_path):
     settings = QSettings(str(tmp_path / 'preferences.ini'), QSettings.Format.IniFormat)
     api = Mock()
-    with patch('formula_ocr.app.QWebEngineView', FakePreview), patch(
+    with patch('formula_ocr.app.create_preview', side_effect=lambda backend: FakePreview()), patch(
         'formula_ocr.app.GlobalHotkey', side_effect=lambda callback: GlobalHotkey(callback, api)
-    ):
+    ), patch.object(QSystemTrayIcon, 'isSystemTrayAvailable', return_value=True), patch.object(
+        QSystemTrayIcon, 'show'
+    ), patch.object(QSystemTrayIcon, 'showMessage'):
         item = Window(settings)
         yield item
         item.timer.stop()
-        item.close()
+        item.capture_delay.stop()
+        if item.capturing:
+            item.capture.cancel()
+        item.hotkey.close()
+        item.tray.hide()
+        item.hide()
         item.deleteLater()
         APP.processEvents()
 
@@ -195,11 +202,20 @@ def test_preferences_persist_and_conflict_is_not_saved(window):
     reopened.reject()
 
 
-def test_capture_cancel_keeps_result_and_success_starts_recognition(window):
+@pytest.mark.parametrize('state', ['hidden', 'normal', 'minimized', 'maximized'])
+def test_capture_cancel_keeps_result_and_success_starts_recognition(window, state):
+    if state == 'normal':
+        window.show()
+    elif state == 'minimized':
+        window.showMinimized()
+    elif state == 'maximized':
+        window.showMaximized()
+    previous_state = window.windowState()
+    previous_visibility = window.isVisible()
     window.editor.setPlainText('previous result')
     APP.clipboard().setText('previous clipboard')
     previous_policy = APP.quitOnLastWindowClosed()
-    with patch('formula_ocr.app.QTimer.singleShot') as schedule, patch.object(window, 'start_recognition') as recognize:
+    with patch.object(window.capture_delay, 'start') as schedule, patch.object(window, 'start_recognition') as recognize:
         window.start_capture()
         assert window.capturing
         assert not window.isVisible()
@@ -211,6 +227,8 @@ def test_capture_cancel_keeps_result_and_success_starts_recognition(window):
         assert window.editor.toPlainText() == 'previous result'
         assert APP.clipboard().text() == 'previous clipboard'
         assert APP.quitOnLastWindowClosed() == previous_policy
+        assert window.isVisible() == previous_visibility
+        assert window.windowState() == previous_state
         window.start_capture()
         image = QImage(80, 60, QImage.Format.Format_RGB32)
         image.fill(Qt.GlobalColor.white)
@@ -218,10 +236,13 @@ def test_capture_cancel_keeps_result_and_success_starts_recognition(window):
         recognize.assert_called_once()
         assert window.png.startswith(b'\x89PNG')
         assert not window.capturing
+        assert window.isVisible()
+        assert not window.isMinimized()
+        assert window.isMaximized() == (state == 'maximized')
 
 
 def test_screenshot_error_and_busy_recognition(window):
-    with patch('formula_ocr.app.QTimer.singleShot') as schedule:
+    with patch.object(window.capture_delay, 'start') as schedule:
         window.worker = Mock()
         window.worker.isRunning.return_value = True
         window.start_capture()
@@ -232,3 +253,90 @@ def test_screenshot_error_and_busy_recognition(window):
         assert not window.capturing
         assert window.isVisible()
         assert '截图失败' in window.status.text()
+
+
+@pytest.mark.parametrize('busy', [False, True])
+def test_close_keeps_hotkey_and_recognition_alive_in_tray(window, busy):
+    window.worker = Mock()
+    window.worker.isRunning.return_value = busy
+    window.editor.setPlainText('previous result')
+    window.show()
+    registered_id = window.hotkey.id
+    with patch.object(APP, 'quit') as quit_app:
+        window.close()
+        assert not window.isVisible()
+        assert not window.closing
+        assert window.hotkey.id == registered_id
+        window.hotkey.api.UnregisterHotKey.assert_not_called()
+        quit_app.assert_not_called()
+        window.got_result('x^2')
+        window.worker.isRunning.return_value = False
+        window.finished()
+        assert not window.isVisible()
+        window.tray_menu.actions()[0].trigger()
+        assert window.isVisible()
+        assert window.editor.toPlainText() == 'x^2'
+        window.close()
+        window.tray.showMessage.assert_called_once()
+
+
+def test_tray_activation_restores_window_but_does_not_interrupt_capture(window):
+    window.tray_activated(QSystemTrayIcon.ActivationReason.Context)
+    assert not window.isVisible()
+    window.tray_activated(QSystemTrayIcon.ActivationReason.Trigger)
+    assert window.isVisible()
+    window.showMinimized()
+    window.tray_activated(QSystemTrayIcon.ActivationReason.DoubleClick)
+    assert not window.isMinimized()
+    with patch.object(window.capture_delay, 'start'):
+        window.tray_menu.actions()[1].trigger()
+        assert window.capturing
+        window.tray_activated(QSystemTrayIcon.ActivationReason.Trigger)
+        assert not window.isVisible()
+        window.capture_cancelled()
+
+
+@pytest.mark.parametrize('capture_pending', [False, True])
+def test_explicit_exit_stops_hotkey_and_pending_capture(window, capture_pending):
+    previous_policy = APP.quitOnLastWindowClosed()
+    if capture_pending:
+        window.start_capture()
+        assert window.capture_delay.isActive()
+    with patch.object(APP, 'quit') as quit_app:
+        window.tray_exit_action.trigger()
+        quit_app.assert_called_once()
+        assert window.closing
+        assert window.hotkey.id is None
+        assert not window.capture_delay.isActive()
+        assert not window.capturing
+        assert not window.capture.overlays
+        assert not window.isVisible()
+        assert APP.quitOnLastWindowClosed() == previous_policy
+
+
+def test_explicit_exit_waits_for_worker_then_quits(window):
+    window.worker = Mock()
+    window.worker.isRunning.return_value = True
+    window.show()
+    with patch.object(APP, 'quit') as quit_app:
+        window.tray_exit_action.trigger()
+        assert window.closing
+        assert window.hotkey.id is None
+        assert not window.tray_exit_action.isEnabled()
+        assert '等待当前请求结束后退出' in window.status.text()
+        quit_app.assert_not_called()
+        assert not window.close()  # A running worker still owns the window.
+        window.worker.isRunning.return_value = False
+        window.finished()
+        quit_app.assert_called_once()
+        assert window.close()  # The final application quit must be able to close it.
+        assert not window.isVisible()
+
+
+def test_close_without_system_tray_exits(window):
+    with patch.object(QSystemTrayIcon, 'isSystemTrayAvailable', return_value=False), patch.object(APP, 'quit') as quit_app:
+        window.show()
+        window.close()
+        quit_app.assert_called_once()
+        assert window.closing
+        assert window.hotkey.id is None

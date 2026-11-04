@@ -15,7 +15,18 @@
 
 ## 安装与启动
 
-**直接下载 Windows 版**：打开 [Formula OCR 1.0 Release](https://github.com/sakiii3321/MathFormulas_OCR/releases/tag/v1.0)，在 **Assets** 中下载 [FormulaOCR-1.0-Windows-x64.exe](https://github.com/sakiii3321/MathFormulas_OCR/releases/download/v1.0/FormulaOCR-1.0-Windows-x64.exe)，双击即可启动。首次使用在「API 设置」中配置视觉模型。单文件版启动时需要展开内置的 Qt 运行组件，请稍候。
+**当前版本为 [Formula OCR 1.1](https://github.com/sakiii3321/MathFormulas_OCR/releases/tag/v1.1)**，提供两个 Windows 10/11 x64 单文件版本，任选一个即可，两者功能相同，均无需安装 Python。
+
+| 版本与下载 | EXE 大小（约） | 运行依赖与选择建议 |
+| --- | ---: | --- |
+| [WebView2 轻量版](https://github.com/sakiii3321/MathFormulas_OCR/releases/download/v1.1/FormulaOCR-1.1-WebView2-Windows-x64.exe) | 54.9 MiB | 使用系统共享的 WebView2 Runtime；已安装或愿意安装该运行时的用户可选，下载更小 |
+| [完整运行库版](https://github.com/sakiii3321/MathFormulas_OCR/releases/download/v1.1/FormulaOCR-1.1-Full-Windows-x64.exe) | 206.6 MiB | 内置 Python、Qt 和 Qt WebEngine 预览引擎，无需另装 WebView2 Runtime，适合希望下载后直接使用的用户 |
+
+轻量版需要 [Microsoft WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/#download-section)。缺少时程序会显示安装/修复入口；安装后重新启动即可。表中大小仅为应用下载包，不含共享运行时和使用时产生的缓存。
+
+下载 EXE 后双击启动。首次使用在「API 设置」中配置视觉模型，也可先点击「查看示例」体验预览和导出。单文件版启动时会展开内置组件，请稍候。**两个版本的 OCR 都使用你配置的模型 API，完整运行库版不包含离线识别模型。**
+
+升级前请先右键托盘图标选择「退出程序」，再启动新版。两版共用已有 API、快捷键和外观设置；同时运行会争用截图快捷键。[查看版本更新说明](CHANGELOG.md)，[历史版本](https://github.com/sakiii3321/MathFormulas_OCR/releases)。Release 附有 `SHA256SUMS.txt`，可用于校验下载文件。
 
 ### 从源码运行
 
@@ -41,6 +52,12 @@ cd MathFormulas_OCR
 | --- | --- | --- |
 | 公式模式 | 单个公式、矩阵、多行公式 | 裸 LaTeX、行内或块级 LaTeX、`equation` 环境、MathML、Word 公式 |
 | 混合模式 | 自然段、行内公式、独立公式、编号和裁剪插图 | Markdown、LaTeX、HTML、Word 富文本、含可编辑公式的 DOCX |
+
+### 后台截图
+
+点击窗口右上角的关闭按钮后，程序会驻留系统托盘，截图快捷键继续有效。后台框选截图后，主窗口会显示并自动识别；按 Esc 或右键取消则保持隐藏，原有内容不变。
+
+点击托盘图标可显示主窗口，右键菜单提供「显示主窗口」「截图识别」「退出程序」。关闭窗口不会中断正在进行的识别；选择「退出程序」后，如有识别请求，会等待请求结束再退出。
 
 ## API 配置
 
@@ -78,6 +95,27 @@ $$
 支持常见图片格式，每张上限 10 MB，转换为 PNG 后也会检查大小。截图选区限于一个显示器内。混合模式适合单栏截图，低清符号、阅读顺序和插图边界需要核对。程序按内容结构重新排版，复杂表格以裁剪图片保留。
 
 ## 测试与打包
+
+### WebView2 轻量版
+
+轻量版的预览使用共享 **WebView2 Runtime**，打包时排除 Qt WebEngine。运行时缺失时，识别、源码编辑和导出仍可使用。版本选择和下载链接见上方「安装与启动」。
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-webview2.txt
+.\.venv\Scripts\python.exe main_webview2.py
+.\build-webview2.cmd
+```
+
+生成的单文件程序为 `dist\webview2\FormulaOCR-WebView2.exe`。预览桥接使用固定版本的 [SideView](https://github.com/AlexsanderMe/SideView)。浏览器数据保存在 `%LOCALAPPDATA%\FormulaOCR\WebView2`，不写入 EXE 所在目录。
+
+Windows 桌面集成测试使用模拟 OCR，并在结束后恢复剪贴板：
+
+```powershell
+.\.venv\Scripts\python.exe tests\webview2_smoke.py
+.\.venv\Scripts\python.exe tests\windows_capture_smoke.py --webview2
+```
+
+### 完整运行库版与自动测试
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install pytest

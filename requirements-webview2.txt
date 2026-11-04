@@ -1,0 +1,2 @@
+-r requirements.txt
+sideview==0.4.0
