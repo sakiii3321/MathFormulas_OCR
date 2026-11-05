@@ -171,6 +171,20 @@ def test_automatic_copy_selected_format(window, kind):
     assert '已自动复制' in window.status.text()
 
 
+def test_word_clipboard_uses_mathtype_compatible_mathml(window):
+    from formula_ocr.clipboard import copy_formula
+
+    copy_formula(r'\mathbf{u}', WORD_FORMAT)
+    mime = APP.clipboard().mimeData()
+    markup = export_text(r'\mathbf{u}', 'MathML')
+    assert markup.isascii()
+    assert '<mi mathvariant="bold">u</mi>' in markup
+    assert mime.text() == markup
+    assert markup in mime.html()
+    assert bytes(mime.data('application/mathml+xml')) == markup.encode('ascii')
+    assert bytes(mime.data('application/x-qt-windows-mime;value="MathML"')) == markup.encode('ascii') + b'\x00'
+
+
 def test_conversion_failure_preserves_clipboard_and_result(window):
     APP.clipboard().setText('previous')
     window.settings.setValue('copy/enabled', True)

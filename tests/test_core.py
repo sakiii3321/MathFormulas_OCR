@@ -50,6 +50,40 @@ def test_array_alignment_and_escaped_ampersand_are_preserved():
     assert '&' in ''.join(root.itertext())
 
 
+def test_mathtype_export_preserves_bold_vectors_without_supplementary_characters():
+    markup = export_text(BOUNDARY_CONDITIONS, 'MathML')
+    assert markup.isascii()
+    tree = ET.fromstring(markup)
+    text = ''.join(tree.itertext())
+    assert all(ord(char) <= 0xffff for char in text)
+    bold = tree.findall('.//m:mi[@mathvariant="bold"]', MATH_NS)
+    assert {node.text for node in bold} == {'u', 'g', 'n'}
+    assert len(bold) == 7
+    assert '\u0393' in text and '\u03b7' in text and '\u2207' in text
+    assert '\u00a0' not in text
+    assert len(tree.findall('.//m:mspace[@width="0.25em"]', MATH_NS)) == 4
+    assert all('style' not in node.attrib for node in tree.iter())
+    assert len(tree.findall('.//m:mtr', MATH_NS)) == 4
+    table = tree.find('.//m:mtable', MATH_NS)
+    assert table.get('columnalign') == 'right left left'
+    assert table.get('columnspacing') == '0em 2em'
+    assert all(len(row) == 3 for row in table.findall('m:mtr', MATH_NS))
+    assert tree.find('.//m:mtd', MATH_NS).get('columnalign') == 'right'
+    preview = mathml(BOUNDARY_CONDITIONS)
+    assert chr(0x1d42e) in preview
+    assert 'text-align:-webkit-right' in preview
+
+
+@pytest.mark.parametrize('latex,letter,variant', [
+    (r'\mathbb{R}', 'R', 'double-struck'), (r'\mathcal{L}', 'L', 'script'),
+    (r'\mathfrak{g}', 'g', 'fraktur'), (r'\mathit{h}', 'h', 'italic'),
+    (r'\mathbf{\alpha}', '\u03b1', 'bold'), (r'\mathsf{A}', 'A', 'sans-serif'),
+])
+def test_mathtype_math_variants(latex, letter, variant):
+    tree = ET.fromstring(export_text(latex, 'MathML'))
+    assert any(node.text == letter and node.get('mathvariant') == variant for node in tree.iter())
+
+
 @pytest.mark.parametrize('value', [r'\[x^2\]', '$$x^2$$', '```latex\nx^2\n```', '$x^2$'])
 def test_delimiters(value):
     assert clean_latex(value) == 'x^2'
