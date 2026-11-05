@@ -14,7 +14,7 @@ from PySide6.QtGui import QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QSystemTrayIcon
 
-from formula_ocr.app import Window, STYLE
+from formula_ocr.app import PreferencesDialog, Window, STYLE
 
 app = QApplication([])
 app.setStyle('Fusion')
@@ -38,7 +38,8 @@ backend = 'webview2' if '--webview2' in sys.argv else 'qt'
 if backend == 'webview2':
     os.environ['WEBVIEW2_USER_DATA_FOLDER'] = str(Path('.tmp/capture-webview2-profile').resolve())
 window = Window(settings, preview_backend=backend)
-window.show()
+window.show_on_startup(background=True)
+assert not window.isVisible(), 'Background startup unexpectedly showed the main window'
 marker = QLabel('E = mc²', None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
 marker.setAlignment(Qt.AlignmentFlag.AlignCenter)
 marker.setStyleSheet('background: white; color: black; font-size: 48px;')
@@ -55,6 +56,7 @@ kernel32.GetCurrentThreadId.restype = wintypes.DWORD
 thread_id = kernel32.GetCurrentThreadId()
 phase = 'cancel_escape'
 finished = False
+preferences_checked = False
 
 
 def finish(code):
@@ -87,6 +89,23 @@ def send_hotkey():
         finish(1)
 
 
+def check_preferences():
+    global preferences_checked
+    try:
+        dialog = app.activeModalWidget()
+        assert isinstance(dialog, PreferencesDialog), 'Tray settings did not open the preferences dialog'
+        assert window.isVisible(), 'Tray settings did not restore the main window'
+        assert dialog.close_to_tray.isChecked()
+        assert dialog.autostart.isEnabled()
+        assert dialog.grab().save(str(Path('.tmp') / f'preferences-{backend}.png'))
+        preferences_checked = True
+        dialog.reject()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        finish(1)
+
+
 def step():
     global phase
     try:
@@ -108,7 +127,7 @@ def step():
                 assert not window.capturing and not window.capture.overlays
                 assert not window.isVisible()
                 assert recognize.call_count == 1
-                print('PASS: close to tray, background hotkey, Escape/right-click stay hidden, screenshot restores window, mock OCR/auto-copy, tray restore and exit during capture.', flush=True)
+                print('PASS: silent tray startup, close to tray, background hotkey, Escape/right-click stay hidden, screenshot restores window, mock OCR/auto-copy, tray restore and exit during capture.', flush=True)
                 finish(0)
             else:
                 old_png = window.png
@@ -141,6 +160,10 @@ def step():
             assert not window.isVisible()
             window.tray_menu.actions()[0].trigger()
             assert window.isVisible()
+            window.close()
+            QTimer.singleShot(150, check_preferences)
+            next(action for action in window.tray_menu.actions() if action.text() == '使用设置').trigger()
+            assert preferences_checked, 'Tray settings check did not complete'
             phase = 'exit_capture'
             send_hotkey()
     except Exception:

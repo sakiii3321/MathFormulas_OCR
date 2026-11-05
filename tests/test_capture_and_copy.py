@@ -3,7 +3,7 @@ from ctypes import wintypes
 from unittest.mock import Mock, patch
 
 import pytest
-from PySide6.QtCore import QMimeData, QPoint, QRectF, QSizeF, QSettings, Qt
+from PySide6.QtCore import QEvent, QMimeData, QPoint, QRectF, QSizeF, QSettings, Qt
 from PySide6.QtGui import QImage, QKeySequence, QPixmap
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QWidget
@@ -128,7 +128,9 @@ def window(tmp_path):
         'formula_ocr.app.GlobalHotkey', side_effect=lambda callback: GlobalHotkey(callback, api)
     ), patch.object(QSystemTrayIcon, 'isSystemTrayAvailable', return_value=True), patch.object(
         QSystemTrayIcon, 'show'
-    ), patch.object(QSystemTrayIcon, 'showMessage'):
+    ), patch.object(QSystemTrayIcon, 'showMessage'), patch(
+        'formula_ocr.app.autostart.is_enabled', return_value=False
+    ), patch('formula_ocr.app.autostart.set_enabled'):
         item = Window(settings)
         yield item
         item.timer.stop()
@@ -139,6 +141,7 @@ def window(tmp_path):
         item.tray.hide()
         item.hide()
         item.deleteLater()
+        APP.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         APP.processEvents()
 
 
@@ -200,6 +203,96 @@ def test_preferences_persist_and_conflict_is_not_saved(window):
     reopened = PreferencesDialog(window)
     assert reopened.copy_format.currentText() == WORD_FORMAT
     reopened.reject()
+
+
+def test_startup_and_resident_preferences_save_and_reopen(window):
+    dialog = PreferencesDialog(window)
+    assert not dialog.autostart.isChecked()
+    assert dialog.close_to_tray.isChecked()
+    dialog.autostart.setChecked(True)
+    dialog.close_to_tray.setChecked(False)
+    with patch('formula_ocr.app.autostart.set_enabled') as set_startup:
+        dialog.save()
+        set_startup.assert_called_once_with(True)
+    assert not window.settings.value('window/close_to_tray', type=bool)
+    with patch('formula_ocr.app.autostart.is_enabled', return_value=True):
+        reopened = PreferencesDialog(window)
+        assert reopened.autostart.isChecked()
+        assert not reopened.close_to_tray.isChecked()
+        reopened.autostart.setChecked(False)
+        with patch('formula_ocr.app.autostart.set_enabled') as set_startup:
+            reopened.save()
+            set_startup.assert_called_once_with(False)
+
+
+def test_cancelling_preferences_does_not_change_startup_or_residency(window):
+    with patch('formula_ocr.app.autostart.set_enabled') as set_startup:
+        dialog = PreferencesDialog(window)
+        dialog.autostart.setChecked(True)
+        dialog.close_to_tray.setChecked(False)
+        dialog.reject()
+        set_startup.assert_not_called()
+        assert window.settings.value('window/close_to_tray', True, type=bool)
+
+
+@pytest.mark.parametrize('registered', [True, False])
+def test_startup_save_failure_preserves_preferences_and_hotkey(window, registered):
+    if not registered:
+        window.hotkey.unregister()
+    previous_sequence = window.hotkey.sequence
+    dialog = PreferencesDialog(window)
+    dialog.hotkey.setKeySequence(QKeySequence('Ctrl+Alt+B'))
+    dialog.autostart.setChecked(True)
+    dialog.close_to_tray.setChecked(False)
+    with patch('formula_ocr.app.autostart.set_enabled', side_effect=PermissionError('denied')), patch(
+        'formula_ocr.app.QMessageBox.warning'
+    ) as warning:
+        dialog.save()
+    warning.assert_called_once()
+    assert window.settings.value('window/close_to_tray', True, type=bool)
+    assert window.settings.value('capture/hotkey', 'Ctrl+Shift+A') == 'Ctrl+Shift+A'
+    if registered:
+        assert window.hotkey.sequence == previous_sequence
+        assert window.hotkey.id is not None
+    else:
+        assert window.hotkey.id is None
+    dialog.reject()
+
+
+def test_unreadable_startup_state_does_not_block_other_preferences(window):
+    with patch('formula_ocr.app.autostart.is_enabled', side_effect=PermissionError('denied')):
+        dialog = PreferencesDialog(window)
+    assert not dialog.autostart.isEnabled()
+    assert '无法读取' in dialog.autostart.toolTip()
+    dialog.close_to_tray.setChecked(False)
+    with patch('formula_ocr.app.autostart.set_enabled') as set_startup:
+        dialog.save()
+        set_startup.assert_not_called()
+    assert not window.settings.value('window/close_to_tray', type=bool)
+
+
+@pytest.mark.parametrize('background,resident,tray_available,visible', [
+    (False, True, True, True),
+    (True, True, True, False),
+    (True, False, True, True),
+    (True, True, False, True),
+])
+def test_startup_visibility(window, background, resident, tray_available, visible):
+    window.settings.setValue('window/close_to_tray', resident)
+    with patch.object(QSystemTrayIcon, 'isSystemTrayAvailable', return_value=tray_available):
+        window.show_on_startup(background)
+    assert window.isVisible() == visible
+    assert not window.closing
+    assert window.hotkey.id is not None
+
+
+def test_tray_preferences_restores_hidden_window(window):
+    with patch('formula_ocr.app.PreferencesDialog') as dialog:
+        action = next(action for action in window.tray_menu.actions() if action.text() == '使用设置')
+        action.trigger()
+    assert window.isVisible()
+    dialog.assert_called_once_with(window)
+    dialog.return_value.exec.assert_called_once()
 
 
 @pytest.mark.parametrize('state', ['hidden', 'normal', 'minimized', 'maximized'])
@@ -340,3 +433,21 @@ def test_close_without_system_tray_exits(window):
         quit_app.assert_called_once()
         assert window.closing
         assert window.hotkey.id is None
+
+
+@pytest.mark.parametrize('busy', [False, True])
+def test_close_with_residency_disabled_exits_and_waits_for_work(window, busy):
+    window.settings.setValue('window/close_to_tray', False)
+    window.worker = Mock()
+    window.worker.isRunning.return_value = busy
+    window.show()
+    with patch.object(APP, 'quit') as quit_app:
+        window.close()
+        assert window.closing
+        assert window.hotkey.id is None
+        window.tray.showMessage.assert_not_called()
+        if busy:
+            quit_app.assert_not_called()
+            window.worker.isRunning.return_value = False
+            window.finished()
+        quit_app.assert_called_once()
