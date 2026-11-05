@@ -6,6 +6,107 @@ import requests
 from formula_ocr.core import clean_latex, endpoint, export_text, mathml, recognize
 
 
+BOUNDARY_CONDITIONS = r"""\begin{aligned}
+\mathbf{u} &= \mathbf{u}_D &&\text{on } \Gamma_D^F \\
+\left[\eta\left(\nabla \mathbf{u} + \nabla \mathbf{u}^T\right) - pI\right]\cdot \mathbf{n} &= \mathbf{g}_N &&\text{on } \Gamma_N^F \\
+T &= T_D &&\text{on } \Gamma_D^T \\
+k\nabla T \cdot \mathbf{n} &= q_N &&\text{on } \Gamma_N^T
+\end{aligned}"""
+MATH_NS = {'m': 'http://www.w3.org/1998/Math/MathML'}
+
+
+@pytest.mark.parametrize('environment', ['aligned', 'align*'])
+def test_alignment_and_spacing_work_in_mathml_core(environment):
+    latex = BOUNDARY_CONDITIONS.replace('aligned', environment)
+    table = ET.fromstring(mathml('$$' + latex + '$$')).find('.//m:mtable', MATH_NS)
+    rows = table.findall('m:mtr', MATH_NS)
+    assert len(rows) == 4
+    for row in rows:
+        cells = row.findall('m:mtd', MATH_NS)
+        assert len(cells) == 4
+        for index, cell in enumerate(cells):
+            alignment = 'right' if index % 2 == 0 else 'left'
+            assert cell.get('columnalign') == alignment
+            assert f'text-align:{alignment}' in cell.get('style', '')
+            assert f'text-align:-webkit-{alignment}' in cell.get('style', '')
+            assert 'padding-left:0' in cell.get('style', '')
+        assert 'padding-right:0em' in cells[0].get('style', '')
+        assert 'padding-right:2em' in cells[1].get('style', '')
+
+
+def test_nested_matrix_keeps_its_centered_columns():
+    root = ET.fromstring(mathml(r'\begin{aligned}x&=\begin{pmatrix}a&bb\\ccc&d\end{pmatrix}\\y&=2\end{aligned}'))
+    outer, matrix = root.findall('.//m:mtable', MATH_NS)
+    assert 'text-align:right' in outer.find('m:mtr/m:mtd', MATH_NS).get('style', '')
+    assert all(cell.get('style') is None for cell in matrix.findall('m:mtr/m:mtd', MATH_NS))
+
+
+def test_array_alignment_and_escaped_ampersand_are_preserved():
+    root = ET.fromstring(mathml(r'\begin{array}{rl}a&b\\long&A\&B\end{array}'))
+    cells = root.findall('.//m:mtd', MATH_NS)
+    assert len(cells) == 4
+    assert 'text-align:right' in cells[0].get('style', '')
+    assert 'text-align:left' in cells[1].get('style', '')
+    assert '&' in ''.join(root.itertext())
+
+
+def test_mathtype_export_preserves_bold_vectors_without_supplementary_characters():
+    markup = export_text(BOUNDARY_CONDITIONS, 'MathML')
+    assert markup.isascii()
+    tree = ET.fromstring(markup)
+    text = ''.join(tree.itertext())
+    assert all(ord(char) <= 0xffff for char in text)
+    bold = tree.findall('.//m:mi[@mathvariant="bold"]', MATH_NS)
+    assert {node.text for node in bold} == {'u', 'g', 'n'}
+    assert len(bold) == 7
+    assert '\u0393' in text and '\u03b7' in text and '\u2207' in text
+    assert '\u00a0' not in text
+    assert len(tree.findall('.//m:mspace[@width="0.25em"]', MATH_NS)) == 4
+    assert all('style' not in node.attrib for node in tree.iter())
+    assert len(tree.findall('.//m:mtr', MATH_NS)) == 4
+    table = tree.find('.//m:mtable', MATH_NS)
+    assert table.get('columnalign') == 'right left left'
+    assert table.get('columnspacing') == '0em 2em'
+    assert all(len(row) == 3 for row in table.findall('m:mtr', MATH_NS))
+    assert tree.find('.//m:mtd', MATH_NS).get('columnalign') == 'right'
+    preview = mathml(BOUNDARY_CONDITIONS)
+    assert chr(0x1d42e) in preview
+    assert 'text-align:-webkit-right' in preview
+
+
+@pytest.mark.parametrize('latex,letter,variant', [
+    (r'\mathbb{R}', 'R', 'double-struck'), (r'\mathcal{L}', 'L', 'script'),
+    (r'\mathfrak{g}', 'g', 'fraktur'), (r'\mathit{h}', 'h', 'italic'),
+    (r'\mathbf{\alpha}', '\u03b1', 'bold'), (r'\mathsf{A}', 'A', 'sans-serif'),
+])
+def test_mathtype_math_variants(latex, letter, variant):
+    tree = ET.fromstring(export_text(latex, 'MathML'))
+    assert any(node.text == letter and node.get('mathvariant') == variant for node in tree.iter())
+
+
+@pytest.mark.parametrize('latex,expected', [
+    (r'\boldsymbol{n}', '\U0001d48f'),
+    (r'\boldsymbol{\alpha}', '\U0001d736'),
+    (r'\boldsymbol{\Gamma}', '\U0001d71e'),
+    (r'\boldsymbol{\nabla}', '\U0001d6c1'),
+    (r'\boldsymbol{x_1}', '\U0001d499\U0001d7cf'),
+])
+def test_boldsymbol_preview_uses_actual_bold_math_glyphs(latex, expected):
+    root = ET.fromstring(mathml(latex))
+    assert ''.join(root.itertext()) == expected
+    exported = ET.fromstring(export_text(latex, 'MathML'))
+    assert all(ord(char) <= 0xffff for char in ''.join(exported.itertext()))
+    assert any('bold' in node.get('mathvariant', '') for node in exported.iter())
+
+
+def test_boldsymbol_preserves_operators_and_regular_letters():
+    root = ET.fromstring(mathml(r'n + \boldsymbol{n+u}'))
+    assert ''.join(root.itertext()) == 'n+\U0001d48f+\U0001d496'
+    operators = root.findall('.//m:mo', MATH_NS)
+    assert operators[0].get('style') is None
+    assert 'font-weight:bold' in operators[1].get('style', '')
+
+
 @pytest.mark.parametrize('value', [r'\[x^2\]', '$$x^2$$', '```latex\nx^2\n```', '$x^2$'])
 def test_delimiters(value):
     assert clean_latex(value) == 'x^2'

@@ -14,6 +14,7 @@ from .core import endpoint, export_text, mathml, recognize
 from .capture import ScreenCapture
 from .clipboard import CODE_FORMATS, COPY_FORMATS, WORD_FORMAT, copy_formula, copy_mixed
 from .hotkey import DEFAULT_HOTKEY, GlobalHotkey
+from . import autostart
 from .providers import PROVIDERS
 from .preview import create_preview
 from .theme import (ASSETS, STYLE, ActionButton, FieldSelect, apply_theme, field_map,
@@ -143,10 +144,24 @@ class PreferencesDialog(QDialog):
         form = QFormLayout(self)
         form.setContentsMargins(22, 18, 22, 18)
         form.setVerticalSpacing(10)
+        self.autostart = QCheckBox("开机自启（登录 Windows 后启动）")
+        self.autostart.setEnabled(sys.platform == "win32")
+        try:
+            self.autostart.setChecked(autostart.is_enabled())
+        except OSError as exc:
+            self.autostart.setEnabled(False)
+            self.autostart.setToolTip("无法读取开机自启状态：" + str(exc))
+        form.addRow(self.autostart)
+        self.close_to_tray = QCheckBox("关闭窗口后驻留系统托盘")
+        self.close_to_tray.setChecked(parent.settings.value("window/close_to_tray", True, type=bool))
+        form.addRow(self.close_to_tray)
+        startup_note = QLabel("开机自启时静默进入托盘，点击托盘图标显示窗口。\n取消常驻后，关闭窗口会退出程序，自启时会显示主窗口。")
+        startup_note.setWordWrap(True)
+        form.addRow(startup_note)
         self.hotkey = QKeySequenceEdit(QKeySequence(parent.settings.value("capture/hotkey", DEFAULT_HOTKEY)))
         self.hotkey.setMaximumSequenceLength(1)
         form.addRow("全局截图快捷键", self.hotkey)
-        help_text = QLabel("点击输入框后按下新组合键，须包含 Ctrl 或 Alt。\n关闭窗口后驻留系统托盘，快捷键仍然有效。\n截图后显示窗口并自动识别；在后台取消截图则保持隐藏。\n按 Esc 或右键取消截图，不会发送图片。")
+        help_text = QLabel("点击输入框后按下新组合键，须包含 Ctrl 或 Alt。\n驻留系统托盘时，快捷键仍然有效。\n截图后显示窗口并自动识别；在后台取消截图则保持隐藏。\n按 Esc 或右键取消截图，不会发送图片。")
         help_text.setWordWrap(True)
         form.addRow(help_text)
         self.auto_copy = QCheckBox("识别成功后自动复制")
@@ -175,11 +190,27 @@ class PreferencesDialog(QDialog):
 
     def save(self):
         parent = self.parent()
+        previous_sequence = parent.hotkey.sequence if parent.hotkey.id is not None else None
         try:
             sequence = parent.hotkey.register(self.hotkey.keySequence().toString(QKeySequence.SequenceFormat.PortableText))
         except ValueError as exc:
             QMessageBox.warning(self, "快捷键无法使用", str(exc))
             return
+        try:
+            if self.autostart.isEnabled():
+                autostart.set_enabled(self.autostart.isChecked())
+        except OSError as exc:
+            if previous_sequence != sequence:
+                parent.hotkey.unregister()
+                if previous_sequence:
+                    try:
+                        parent.hotkey.register(previous_sequence)
+                    except ValueError:
+                        pass
+                parent.update_capture_hint()
+            QMessageBox.warning(self, "无法保存开机自启", "请检查 Windows 启动项权限后重试。\n" + str(exc))
+            return
+        parent.settings.setValue("window/close_to_tray", self.close_to_tray.isChecked())
         parent.settings.setValue("capture/hotkey", sequence)
         parent.settings.setValue("copy/enabled", self.auto_copy.isChecked())
         parent.settings.setValue("copy/format", self.copy_format.currentText())
@@ -463,6 +494,7 @@ class Window(QMainWindow):
         self.tray_menu = QMenu(self)
         self.tray_menu.addAction("显示主窗口", self.show_main_window)
         self.tray_menu.addAction("截图识别", self.start_capture)
+        self.tray_menu.addAction("使用设置", self.open_preferences)
         self.tray_menu.addSeparator()
         self.tray_exit_action = self.tray_menu.addAction("退出程序", self.quit_application)
         self.tray.setContextMenu(self.tray_menu)
@@ -515,7 +547,16 @@ class Window(QMainWindow):
         SettingsDialog(self).exec()
 
     def open_preferences(self):
+        if self.capturing or self.closing:
+            return
+        self.show_main_window()
         PreferencesDialog(self).exec()
+
+    def show_on_startup(self, background=False):
+        if (background and self.settings.value("window/close_to_tray", True, type=bool)
+                and QSystemTrayIcon.isSystemTrayAvailable()):
+            return
+        self.show_main_window()
 
     def apply_appearance(self, night):
         apply_theme(QApplication.instance(), night)
@@ -797,7 +838,8 @@ class Window(QMainWindow):
         event.ignore()
         if self.capturing or self.closing:
             return
-        if not QSystemTrayIcon.isSystemTrayAvailable():
+        if (not self.settings.value("window/close_to_tray", True, type=bool)
+                or not QSystemTrayIcon.isSystemTrayAvailable()):
             self.quit_application()
             return
         self.hide()
@@ -818,5 +860,5 @@ def main(preview_backend="qt"):
     app.setStyle("Fusion")
     app.setQuitOnLastWindowClosed(False)
     window = Window(preview_backend=preview_backend)
-    window.show()
+    window.show_on_startup(background="--background" in sys.argv[1:])
     sys.exit(app.exec())

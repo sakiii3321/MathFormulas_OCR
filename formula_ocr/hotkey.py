@@ -79,8 +79,11 @@ class GlobalHotkey(QAbstractNativeEventFilter):
                 return True, 0
         return False, 0
 
-    def close(self):
+    def unregister(self):
         if self.id is not None:
             self.api.UnregisterHotKey(None, self.id)
             self.id = None
+
+    def close(self):
+        self.unregister()
         QApplication.instance().removeNativeEventFilter(self)

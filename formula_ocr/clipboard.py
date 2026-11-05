@@ -13,7 +13,7 @@ def copy_formula(latex, kind):
     if kind != WORD_FORMAT:
         QApplication.clipboard().setText(export_text(latex, kind))
         return
-    markup = mathml(latex)
+    markup = mathml(latex, for_export=True)
     mime = QMimeData()
     mime.setText(markup)
     mime.setHtml('<html><body>' + markup + '</body></html>')
