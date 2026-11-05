@@ -15,12 +15,12 @@
 
 ## 安装与启动
 
-**当前版本为 [Formula OCR 1.1](https://github.com/sakiii3321/MathFormulas_OCR/releases/tag/v1.1)**，提供两个 Windows 10/11 x64 单文件版本，任选一个即可，两者功能相同，均无需安装 Python。
+**当前版本为 [Formula OCR 1.2](https://github.com/sakiii3321/MathFormulas_OCR/releases/tag/v1.2)**，提供两个 Windows 10/11 x64 单文件版本，任选一个即可，两者功能相同，均无需安装 Python。
 
 | 版本与下载 | EXE 大小（约） | 运行依赖与选择建议 |
 | --- | ---: | --- |
-| [WebView2 轻量版](https://github.com/sakiii3321/MathFormulas_OCR/releases/download/v1.1/FormulaOCR-1.1-WebView2-Windows-x64.exe) | 54.9 MiB | 使用系统共享的 WebView2 Runtime；已安装或愿意安装该运行时的用户可选，下载更小 |
-| [完整运行库版](https://github.com/sakiii3321/MathFormulas_OCR/releases/download/v1.1/FormulaOCR-1.1-Full-Windows-x64.exe) | 206.6 MiB | 内置 Python、Qt 和 Qt WebEngine 预览引擎，无需另装 WebView2 Runtime，适合希望下载后直接使用的用户 |
+| [WebView2 轻量版](https://github.com/sakiii3321/MathFormulas_OCR/releases/download/v1.2/FormulaOCR-1.2-WebView2-Windows-x64.exe) | 54.9 MiB | 使用系统共享的 WebView2 Runtime；已安装或愿意安装该运行时的用户可选，下载更小 |
+| [完整运行库版](https://github.com/sakiii3321/MathFormulas_OCR/releases/download/v1.2/FormulaOCR-1.2-Full-Windows-x64.exe) | 206.6 MiB | 内置 Python、Qt 和 Qt WebEngine 预览引擎，无需另装 WebView2 Runtime，适合希望下载后直接使用的用户 |
 
 轻量版需要 [Microsoft WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/#download-section)。缺少时程序会显示安装/修复入口；安装后重新启动即可。表中大小仅为应用下载包，不含共享运行时和使用时产生的缓存。
 
