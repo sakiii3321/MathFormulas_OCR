@@ -6,6 +6,50 @@ import requests
 from formula_ocr.core import clean_latex, endpoint, export_text, mathml, recognize
 
 
+BOUNDARY_CONDITIONS = r"""\begin{aligned}
+\mathbf{u} &= \mathbf{u}_D &&\text{on } \Gamma_D^F \\
+\left[\eta\left(\nabla \mathbf{u} + \nabla \mathbf{u}^T\right) - pI\right]\cdot \mathbf{n} &= \mathbf{g}_N &&\text{on } \Gamma_N^F \\
+T &= T_D &&\text{on } \Gamma_D^T \\
+k\nabla T \cdot \mathbf{n} &= q_N &&\text{on } \Gamma_N^T
+\end{aligned}"""
+MATH_NS = {'m': 'http://www.w3.org/1998/Math/MathML'}
+
+
+@pytest.mark.parametrize('environment', ['aligned', 'align*'])
+def test_alignment_and_spacing_work_in_mathml_core(environment):
+    latex = BOUNDARY_CONDITIONS.replace('aligned', environment)
+    table = ET.fromstring(mathml('$$' + latex + '$$')).find('.//m:mtable', MATH_NS)
+    rows = table.findall('m:mtr', MATH_NS)
+    assert len(rows) == 4
+    for row in rows:
+        cells = row.findall('m:mtd', MATH_NS)
+        assert len(cells) == 4
+        for index, cell in enumerate(cells):
+            alignment = 'right' if index % 2 == 0 else 'left'
+            assert cell.get('columnalign') == alignment
+            assert f'text-align:{alignment}' in cell.get('style', '')
+            assert f'text-align:-webkit-{alignment}' in cell.get('style', '')
+            assert 'padding-left:0' in cell.get('style', '')
+        assert 'padding-right:0em' in cells[0].get('style', '')
+        assert 'padding-right:2em' in cells[1].get('style', '')
+
+
+def test_nested_matrix_keeps_its_centered_columns():
+    root = ET.fromstring(mathml(r'\begin{aligned}x&=\begin{pmatrix}a&bb\\ccc&d\end{pmatrix}\\y&=2\end{aligned}'))
+    outer, matrix = root.findall('.//m:mtable', MATH_NS)
+    assert 'text-align:right' in outer.find('m:mtr/m:mtd', MATH_NS).get('style', '')
+    assert all(cell.get('style') is None for cell in matrix.findall('m:mtr/m:mtd', MATH_NS))
+
+
+def test_array_alignment_and_escaped_ampersand_are_preserved():
+    root = ET.fromstring(mathml(r'\begin{array}{rl}a&b\\long&A\&B\end{array}'))
+    cells = root.findall('.//m:mtd', MATH_NS)
+    assert len(cells) == 4
+    assert 'text-align:right' in cells[0].get('style', '')
+    assert 'text-align:left' in cells[1].get('style', '')
+    assert '&' in ''.join(root.itertext())
+
+
 @pytest.mark.parametrize('value', [r'\[x^2\]', '$$x^2$$', '```latex\nx^2\n```', '$x^2$'])
 def test_delimiters(value):
     assert clean_latex(value) == 'x^2'

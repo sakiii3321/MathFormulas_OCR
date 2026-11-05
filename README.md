@@ -118,6 +118,7 @@ Windows 桌面集成测试使用模拟 OCR，并在结束后恢复剪贴板：
 
 ```powershell
 .\.venv\Scripts\python.exe tests\webview2_smoke.py
+.\.venv\Scripts\python.exe tests\webview2_alignment_smoke.py
 .\.venv\Scripts\python.exe tests\windows_capture_smoke.py --webview2
 ```
 
