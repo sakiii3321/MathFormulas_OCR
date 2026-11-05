@@ -1,6 +1,7 @@
 import base64
 import re
 import unicodedata
+from functools import lru_cache
 from urllib.parse import urlsplit
 import xml.etree.ElementTree as ET
 
@@ -18,6 +19,45 @@ _MATH_VARIANTS = {
     "SCRIPT": "script", "FRAKTUR": "fraktur", "MONOSPACE": "monospace",
     "BLACK-LETTER": "fraktur",
 }
+
+
+def _math_character(char):
+    name = unicodedata.name(char, '').removeprefix('MATHEMATICAL ')
+    decomposition = unicodedata.decomposition(char)
+    variant = next((value for prefix, value in _MATH_VARIANTS.items()
+                    if name.startswith(prefix + ' ')), None)
+    if char == '\u210e':  # The italic h is encoded as PLANCK CONSTANT.
+        variant = 'italic'
+    if variant and decomposition.startswith('<font> '):
+        return ''.join(chr(int(value, 16)) for value in decomposition.split()[1:]), variant
+    return char, None
+
+
+@lru_cache(maxsize=1)
+def _math_variant_characters():
+    result = {}
+    for codepoint in (*range(0x2100, 0x2150), *range(0x1d400, 0x1d800)):
+        char = chr(codepoint)
+        base, variant = _math_character(char)
+        if variant:
+            result[base, variant] = char
+    return result
+
+
+def _preview_math_variants(tree):
+    # MathML Core ignores bold/italic mathvariant attributes. Use actual math glyphs,
+    # as the converter already does for \mathbf; preserve portable attributes on export.
+    characters = _math_variant_characters()
+    for node in tree.iter():
+        variant = node.get('mathvariant', '')
+        if not variant or not node.text:
+            continue
+        original = node.text
+        node.text = ''.join(characters.get((char, variant), char) for char in original)
+        if ('bold' in variant and node.text == original
+                and not any(_math_character(char)[1] for char in original)):
+            # Operators such as + have no mathematical alphanumeric counterpart.
+            node.set('style', 'font-weight:bold')
 
 
 def _export_mathml(tree):
@@ -59,16 +99,8 @@ def _export_mathml(tree):
             continue
         runs = []
         for char in node.text:
-            name = unicodedata.name(char, '').removeprefix('MATHEMATICAL ')
-            decomposition = unicodedata.decomposition(char)
-            variant = next((value for prefix, value in _MATH_VARIANTS.items()
-                            if name.startswith(prefix + ' ')), None)
-            if char == '\u210e':  # The italic h is encoded as PLANCK CONSTANT.
-                variant = 'italic'
-            if variant and decomposition.startswith('<font> '):
-                char = ''.join(chr(int(value, 16)) for value in decomposition.split()[1:])
-            else:
-                variant = node.get('mathvariant')
+            char, variant = _math_character(char)
+            variant = variant or node.get('mathvariant')
             if runs and runs[-1][1] == variant:
                 runs[-1] = (runs[-1][0] + char, variant)
             else:
@@ -170,6 +202,7 @@ def mathml(latex: str, display: str = "block", *, for_export: bool = False) -> s
     tree = ET.fromstring(result)  # Reject malformed converter output before preview or clipboard.
     if for_export:
         return _export_mathml(tree)
+    _preview_math_variants(tree)
     ns = {"m": MATHML_NS}
     # Chromium's MathML Core uses CSS instead of MathML 3 column alignment/spacing.
     # Keep the attributes for consumers such as Word, and add equivalent browser styles.

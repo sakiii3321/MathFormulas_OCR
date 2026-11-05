@@ -23,9 +23,14 @@ mixed = to_html(from_markdown('Boundary conditions\n\n$$\n' + BOUNDARY_CONDITION
 markup = ('<!doctype html><meta charset="utf-8"><style>'
           'body{background:white;color:black;margin:24px}math{font-size:27px;font-family:"Cambria Math",serif}'
           '#baseline{position:absolute;left:-10000px;width:900px}</style>'
+          '<section>Regular n: <span id="normal-n">' + mathml('n', 'inline') + '</span>'
+          ' / boldsymbol n: <span id="boldsymbol-n">' + mathml(r'\boldsymbol{n}', 'inline') + '</span>'
+          ' / mathbf n: <span id="mathbf-n">' + mathml(r'\mathbf{n}', 'inline') + '</span>'
+          ' / Greek: <span id="bold-greek">' + mathml(r'\boldsymbol{\alpha+\Gamma}', 'inline') + '</span></section>'
           '<section id="formula">' + mathml(BOUNDARY_CONDITIONS) + '</section>'
           '<section id="mixed">' + mixed + '</section>'
-          '<section id="baseline">' + baseline + '</section>')
+          '<section id="baseline">' + baseline + '<span id="old-boldsymbol">'
+          + convert(r'\boldsymbol{n}') + '</span></section>')
 preview.setHtml(markup)
 finished = False
 
@@ -44,10 +49,16 @@ def inspect(data):
             assert all(0 <= row['equalsLeft'] - row['lhsRight'] < 16 for row in rows), rows
         before = [row['lhsRight'] for row in data['baseline']]
         assert max(before) - min(before) > 20, before
+        assert data['bold']['normal-n'] == 'n', data['bold']
+        assert data['bold']['boldsymbol-n'] == '\U0001d48f', data['bold']
+        assert data['bold']['mathbf-n'] == '\U0001d427', data['bold']
+        assert data['bold']['bold-greek'] == '\U0001d736+\U0001d71e', data['bold']
+        assert data['bold']['old-boldsymbol'] == 'n', data['bold']
         output = Path('.tmp/alignment-preview-webview2.png')
         preview._view.captureCompleted.connect(lambda _request, png: output.write_bytes(png))
         preview._view.capture_frame()
         print('PASS WebView2: aligned and mixed previews align all four equations and conditions; original output reproduces the defect.', flush=True)
+        print('PASS WebView2: boldsymbol Latin/Greek glyphs retain bold italic styling, distinct from ordinary and mathbf letters.', flush=True)
         print('PREVIEW_IMAGE=' + str(output.resolve()), flush=True)
         finished = True
         poll.stop()
@@ -62,7 +73,7 @@ def inspect(data):
 
 
 def check():
-    script = """Object.fromEntries(['formula','mixed','baseline'].map(id=>{
+    script = """(() => { const result = Object.fromEntries(['formula','mixed','baseline'].map(id=>{
       const table=document.querySelector('#'+id+' math mtable');
       return [id,table?[...table.children].map(row=>{
         const cells=[...row.children];
@@ -70,7 +81,9 @@ def check():
         return {alignment:getComputedStyle(cells[0]).textAlign, cellRight:cells[0].getBoundingClientRect().right, lhsRight:range.getBoundingClientRect().right,
           equalsLeft:cells[1].querySelector('mo').getBoundingClientRect().left,
           conditionLeft:cells[3].querySelector('mtext').getBoundingClientRect().left};
-      }):[]];}))"""
+      }):[]];})); result.bold=Object.fromEntries(
+        ['normal-n','boldsymbol-n','mathbf-n','bold-greek','old-boldsymbol'].map(id=>
+          [id,document.getElementById(id).textContent])); return result; })()"""
     if preview._view and preview._view._native_ready:
         preview.runJavaScript(script, inspect)
 

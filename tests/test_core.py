@@ -84,6 +84,29 @@ def test_mathtype_math_variants(latex, letter, variant):
     assert any(node.text == letter and node.get('mathvariant') == variant for node in tree.iter())
 
 
+@pytest.mark.parametrize('latex,expected', [
+    (r'\boldsymbol{n}', '\U0001d48f'),
+    (r'\boldsymbol{\alpha}', '\U0001d736'),
+    (r'\boldsymbol{\Gamma}', '\U0001d71e'),
+    (r'\boldsymbol{\nabla}', '\U0001d6c1'),
+    (r'\boldsymbol{x_1}', '\U0001d499\U0001d7cf'),
+])
+def test_boldsymbol_preview_uses_actual_bold_math_glyphs(latex, expected):
+    root = ET.fromstring(mathml(latex))
+    assert ''.join(root.itertext()) == expected
+    exported = ET.fromstring(export_text(latex, 'MathML'))
+    assert all(ord(char) <= 0xffff for char in ''.join(exported.itertext()))
+    assert any('bold' in node.get('mathvariant', '') for node in exported.iter())
+
+
+def test_boldsymbol_preserves_operators_and_regular_letters():
+    root = ET.fromstring(mathml(r'n + \boldsymbol{n+u}'))
+    assert ''.join(root.itertext()) == 'n+\U0001d48f+\U0001d496'
+    operators = root.findall('.//m:mo', MATH_NS)
+    assert operators[0].get('style') is None
+    assert 'font-weight:bold' in operators[1].get('style', '')
+
+
 @pytest.mark.parametrize('value', [r'\[x^2\]', '$$x^2$$', '```latex\nx^2\n```', '$x^2$'])
 def test_delimiters(value):
     assert clean_latex(value) == 'x^2'
