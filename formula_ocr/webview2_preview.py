@@ -5,10 +5,11 @@ import ctypes
 from ctypes import wintypes
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QStandardPaths, Qt, Signal
-from PySide6.QtGui import QPalette
+from PySide6.QtCore import QEvent, QStandardPaths, Qt, QTimer, Signal
+from PySide6.QtGui import QPalette, QPixmap
 from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 from sideview import NativeWebView, NativeWebViewError
+from .preview import FIT_FORMULA_SCRIPT, preview_theme_script
 
 RUNTIME_URL = "https://developer.microsoft.com/microsoft-edge/webview2/#download-section"
 
@@ -52,6 +53,11 @@ class WebView2Preview(QWidget):
         self._callbacks = {}
         self._request_id = 0
         self._view = None
+        self._night = None
+        self._snapshot = None
+        self._snapshot_timer = QTimer(self)
+        self._snapshot_timer.setSingleShot(True)
+        self._snapshot_timer.timeout.connect(lambda: self._complete_snapshot(QPixmap()))
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.message = QLabel(self)
@@ -70,6 +76,7 @@ class WebView2Preview(QWidget):
             self._view.navigationFinished.connect(self._loaded)
             self._view.navigationFailed.connect(self._failed)
             self._view.scriptMessageReceived.connect(self._script_result)
+            self._view.captureCompleted.connect(self._snapshot_ready)
             layout.addWidget(self._view)
         except NativeWebViewError as exc:
             self._failed(str(exc))
@@ -103,7 +110,15 @@ class WebView2Preview(QWidget):
     def _loaded(self, _url):
         self.message.hide()
         self._view.show()
+        self.runJavaScript(FIT_FORMULA_SCRIPT)
+        if self._night is not None:
+            self.set_preview_theme(self._night)
         self.loadFinished.emit(True)
+
+    def set_preview_theme(self, night):
+        self._night = night
+        if self._view is not None and self._view._native_ready:
+            self.runJavaScript(preview_theme_script(night))
 
     def _failed(self, message):
         if self._view is not None:
@@ -116,6 +131,33 @@ class WebView2Preview(QWidget):
         )
         self.message.show()
         self.loadFinished.emit(False)
+
+    def capture_for_transition(self, callback):
+        # QWidget.grab() omits the Edge child window. Capture only our own
+        # preview and paint it into the outgoing page at its widget bounds.
+        if self._view is None or not self._view.isVisible() or not self._view._native_ready:
+            callback(None)
+            return
+        try:
+            request_id = self._view.capture_frame()
+        except NativeWebViewError:
+            callback(QPixmap())
+            return
+        self._snapshot = (request_id, callback)
+        self._snapshot_timer.start(250)
+
+    def _snapshot_ready(self, request_id, data):
+        if self._snapshot is not None and request_id == self._snapshot[0]:
+            frame = QPixmap()
+            frame.loadFromData(data)
+            self._complete_snapshot(frame)
+
+    def _complete_snapshot(self, frame):
+        if self._snapshot is not None:
+            _, callback = self._snapshot
+            self._snapshot = None
+            self._snapshot_timer.stop()
+            callback(frame)
 
     def runJavaScript(self, script, callback=None):
         """Evaluate a host-supplied expression; page scripts remain blocked by CSP."""
@@ -152,6 +194,8 @@ class WebView2Preview(QWidget):
         self.runJavaScript("document.body.innerText", callback)
 
     def dispose(self):
+        self._snapshot_timer.stop()
+        self._snapshot = None
         self._callbacks.clear()
         if self._view is not None:
             self._view.dispose()

@@ -13,12 +13,27 @@ def copy_formula(latex, kind):
     if kind != WORD_FORMAT:
         QApplication.clipboard().setText(export_text(latex, kind))
         return
-    markup = mathml(latex, for_export=True)
+    markup = mathml(latex, for_word=True)
     mime = QMimeData()
     mime.setText(markup)
-    mime.setHtml('<html><body>' + markup + '</body></html>')
+    if '<malignmark' in markup:
+        from .mixed import office_html_math
+        # Browsers render the two physical columns; Word gets an editable equation array.
+        browser = mathml(latex)
+        try:
+            office = office_html_math(latex, True)
+            rich = ('<!--[if gte msEquation 12]>' + office + '<![endif]-->'
+                    '<!--[if !msEquation]><!-->' + browser + '<!--<![endif]-->')
+        except ValueError:
+            rich = browser
+        mime.setHtml('<html xmlns:m="http://schemas.microsoft.com/office/2004/12/omml"><body>'
+                     + rich + '</body></html>')
+    else:
+        mime.setHtml('<html><body>' + markup + '</body></html>')
     mime.setData('application/mathml+xml', QByteArray(markup.encode("utf-8")))
-    mime.setData('application/x-qt-windows-mime;value="MathML"', QByteArray(markup.encode("utf-8") + b'\x00'))
+    office_data = QByteArray((markup + '\0').encode('utf-16-le'))
+    for name in ('MathML', 'MathML Presentation'):
+        mime.setData(f'application/x-qt-windows-mime;value="{name}"', office_data)
     QApplication.clipboard().setMimeData(mime)
 
 

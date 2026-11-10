@@ -182,7 +182,27 @@ def test_word_clipboard_uses_mathtype_compatible_mathml(window):
     assert mime.text() == markup
     assert markup in mime.html()
     assert bytes(mime.data('application/mathml+xml')) == markup.encode('ascii')
-    assert bytes(mime.data('application/x-qt-windows-mime;value="MathML"')) == markup.encode('ascii') + b'\x00'
+    for name in ('MathML', 'MathML Presentation'):
+        assert bytes(mime.data(f'application/x-qt-windows-mime;value="{name}"')) == (markup + '\0').encode('utf-16-le')
+
+
+def test_manual_and_automatic_word_copy_include_the_same_alignment(window):
+    pytest.importorskip('pythoncom')
+    from test_mathtype import LOSSES
+
+    window.settings.setValue('copy/enabled', True)
+    window.settings.setValue('copy/format', WORD_FORMAT)
+    with patch('formula_ocr.mathtype._native_alignment', return_value='test alignment'):
+        window.got_result(LOSSES)
+        auto = APP.clipboard().text()
+        assert 'encoding="MathType-MTEF">test alignment</annotation>' in auto
+        APP.clipboard().setText('')
+        window.copy_word()
+        mime = APP.clipboard().mimeData()
+        assert mime.text() == auto
+        assert '<m:oMath' in mime.html() and 'MathType-MTEF' not in mime.html()
+        assert '<m:eqArr>' in mime.html() and auto.count('<malignmark') == 3
+        assert bytes(mime.data('application/mathml+xml')) == auto.encode('ascii')
 
 
 def test_conversion_failure_preserves_clipboard_and_result(window):
@@ -200,6 +220,8 @@ def test_preferences_persist_and_conflict_is_not_saved(window):
     dialog = PreferencesDialog(window)
     assert dialog.hotkey.keySequence() == QKeySequence('Ctrl+Shift+A')
     assert not dialog.auto_copy.isChecked()
+    assert dialog.min_formula_font.value() == 16
+    dialog.min_formula_font.setValue(20)
     dialog.hotkey.setKeySequence(QKeySequence('Ctrl+Alt+B'))
     dialog.auto_copy.setChecked(True)
     dialog.copy_format.setCurrentText(WORD_FORMAT)
@@ -207,6 +229,7 @@ def test_preferences_persist_and_conflict_is_not_saved(window):
     with patch('formula_ocr.app.QMessageBox.warning'):
         dialog.save()
     assert not window.settings.value('copy/enabled', False, type=bool)
+    assert window.settings.value('preview/min_font_px') is None
     window.hotkey.api.RegisterHotKey.return_value = True
     dialog.save()
     window.settings.sync()
@@ -214,17 +237,41 @@ def test_preferences_persist_and_conflict_is_not_saved(window):
     assert saved.value('capture/hotkey') == 'Ctrl+Alt+B'
     assert saved.value('copy/enabled', type=bool)
     assert saved.value('copy/format') == WORD_FORMAT
+    assert 'data-min-font="20"' in window.preview.html
     reopened = PreferencesDialog(window)
     assert reopened.copy_format.currentText() == WORD_FORMAT
+    assert reopened.min_formula_font.value() == 20
     reopened.reject()
+
+
+@pytest.mark.parametrize('width,height', [(450, 2100), (2100, 450), (40, 24)])
+def test_original_image_fits_resized_pane_and_ocr_keeps_full_resolution(window, width, height):
+    window.show()
+    pane = window.drop
+    image = QImage(width, height, QImage.Format.Format_RGB32)
+    image.fill(Qt.GlobalColor.white)
+    assert window.load_image(image)
+    for frame_width, frame_height in [(440, 180), (220, 290)]:
+        pane.setFixedSize(frame_width, frame_height)
+        APP.processEvents()
+        viewport = pane.viewport().size()
+        shown = pane.canvas.pixmap()
+        logical = shown.deviceIndependentSize()
+        assert 0 < logical.width() < viewport.width() and 0 < logical.height() < viewport.height()
+        scale = min(1, (viewport.width() - 8) * pane.devicePixelRatioF() / width,
+                    (viewport.height() - 8) * pane.devicePixelRatioF() / height)
+        assert abs(shown.width() - width * scale) <= 1
+        assert abs(shown.height() - height * scale) <= 1
+        assert pane.verticalScrollBar().maximum() == pane.horizontalScrollBar().maximum() == 0
+    assert QImage.fromData(window.png).size() == image.size()
 
 
 def test_startup_and_resident_preferences_save_and_reopen(window):
     dialog = PreferencesDialog(window)
     assert not dialog.autostart.isChecked()
-    assert dialog.close_to_tray.isChecked()
+    assert dialog.close_action.currentData() == 'ask'
     dialog.autostart.setChecked(True)
-    dialog.close_to_tray.setChecked(False)
+    dialog.close_action.setCurrentIndex(dialog.close_action.findData('exit'))
     with patch('formula_ocr.app.autostart.set_enabled') as set_startup:
         dialog.save()
         set_startup.assert_called_once_with(True)
@@ -232,7 +279,7 @@ def test_startup_and_resident_preferences_save_and_reopen(window):
     with patch('formula_ocr.app.autostart.is_enabled', return_value=True):
         reopened = PreferencesDialog(window)
         assert reopened.autostart.isChecked()
-        assert not reopened.close_to_tray.isChecked()
+        assert reopened.close_action.currentData() == 'exit'
         reopened.autostart.setChecked(False)
         with patch('formula_ocr.app.autostart.set_enabled') as set_startup:
             reopened.save()
@@ -243,7 +290,7 @@ def test_cancelling_preferences_does_not_change_startup_or_residency(window):
     with patch('formula_ocr.app.autostart.set_enabled') as set_startup:
         dialog = PreferencesDialog(window)
         dialog.autostart.setChecked(True)
-        dialog.close_to_tray.setChecked(False)
+        dialog.close_action.setCurrentIndex(dialog.close_action.findData('exit'))
         dialog.reject()
         set_startup.assert_not_called()
         assert window.settings.value('window/close_to_tray', True, type=bool)
@@ -257,7 +304,7 @@ def test_startup_save_failure_preserves_preferences_and_hotkey(window, registere
     dialog = PreferencesDialog(window)
     dialog.hotkey.setKeySequence(QKeySequence('Ctrl+Alt+B'))
     dialog.autostart.setChecked(True)
-    dialog.close_to_tray.setChecked(False)
+    dialog.close_action.setCurrentIndex(dialog.close_action.findData('exit'))
     with patch('formula_ocr.app.autostart.set_enabled', side_effect=PermissionError('denied')), patch(
         'formula_ocr.app.QMessageBox.warning'
     ) as warning:
@@ -278,7 +325,7 @@ def test_unreadable_startup_state_does_not_block_other_preferences(window):
         dialog = PreferencesDialog(window)
     assert not dialog.autostart.isEnabled()
     assert '无法读取' in dialog.autostart.toolTip()
-    dialog.close_to_tray.setChecked(False)
+    dialog.close_action.setCurrentIndex(dialog.close_action.findData('exit'))
     with patch('formula_ocr.app.autostart.set_enabled') as set_startup:
         dialog.save()
         set_startup.assert_not_called()
@@ -364,6 +411,7 @@ def test_screenshot_error_and_busy_recognition(window):
 
 @pytest.mark.parametrize('busy', [False, True])
 def test_close_keeps_hotkey_and_recognition_alive_in_tray(window, busy):
+    window.settings.setValue('window/ask_on_close', False)
     window.worker = Mock()
     window.worker.isRunning.return_value = busy
     window.editor.setPlainText('previous result')
@@ -449,8 +497,57 @@ def test_close_without_system_tray_exits(window):
         assert window.hotkey.id is None
 
 
+def test_close_prompt_can_cancel_or_hide_once_without_remembering(window):
+    window.show()
+    window.close()
+    prompt = window.close_prompt
+    window.close()
+    assert window.close_prompt is prompt
+    prompt.checkBox().setChecked(True)
+    QTest.keyClick(prompt, Qt.Key.Key_Escape)
+    assert window.isVisible() and window.close_prompt is None
+    assert not window.settings.contains('window/ask_on_close')
+    window.close()
+    prompt = window.close_prompt
+    next(b for b in prompt.buttons() if b.text() == '转到后台').click()
+    assert not window.isVisible() and window.hotkey.id is not None
+    window.show_main_window()
+    window.close()
+    assert window.close_prompt.isVisible()
+    window.close_prompt.reject()
+
+
+@pytest.mark.parametrize('choice,action', [('退出程序', 'exit'), ('转到后台', 'tray')])
+def test_remember_close_action_and_restore_prompt(window, choice, action):
+    window.settings.setValue('window/close_to_tray', False)  # Preference from v1.2.
+    window.show()
+    window.close()
+    prompt = window.close_prompt
+    assert prompt.defaultButton().text() == '退出程序'
+    prompt.checkBox().setChecked(True)
+    with patch.object(APP, 'quit') as quit_app:
+        next(b for b in prompt.buttons() if b.text() == choice).click()
+        assert window.closing == (action == 'exit')
+        assert quit_app.called == window.closing
+        assert not window.settings.value('window/ask_on_close', type=bool)
+        assert window.settings.value('window/close_to_tray', type=bool) == (action == 'tray')
+    if action == 'tray':
+        window.show_main_window()
+        window.close()
+        assert window.close_prompt is None and not window.isVisible()
+        window.show_main_window()
+        prefs = PreferencesDialog(window)
+        assert prefs.close_action.currentData() == action
+        prefs.close_action.setCurrentIndex(prefs.close_action.findData('ask'))
+        prefs.save()
+        window.close()
+        assert window.close_prompt.isVisible()
+        window.close_prompt.reject()
+
+
 @pytest.mark.parametrize('busy', [False, True])
 def test_close_with_residency_disabled_exits_and_waits_for_work(window, busy):
+    window.settings.setValue('window/ask_on_close', False)
     window.settings.setValue('window/close_to_tray', False)
     window.worker = Mock()
     window.worker.isRunning.return_value = busy

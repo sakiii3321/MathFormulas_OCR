@@ -7,11 +7,13 @@ import json
 import math
 from pathlib import Path
 import re
+import xml.etree.ElementTree as ET
 
 from PySide6.QtCore import QBuffer, QIODevice
 from PySide6.QtGui import QImage
 
 from .core import clean_latex, mathml, request_content
+from .word_math import native_omml
 
 MIXED_FORMATS = ["Markdown", "LaTeX", "HTML"]
 MIXED_WORD = "Word 图文（富文本）"
@@ -225,9 +227,8 @@ def data_uri(doc, asset):
 
 
 def to_omml(latex, display=False):
-    import mathml2omml
     try:
-        content = mathml2omml.convert(mathml(latex, 'block' if display else 'inline'))
+        content = native_omml(ET.fromstring(mathml(latex, 'block' if display else 'inline')))
     except Exception as exc:
         raise ValueError('无法生成 Word 可编辑公式：' + latex[:80]) from exc
     if display:
@@ -235,7 +236,7 @@ def to_omml(latex, display=False):
     return content
 
 
-def _office_html_math(latex, display):
+def office_html_math(latex, display):
     content = to_omml(latex, display)
     def run(match):
         body = match[1]
@@ -260,7 +261,7 @@ def to_html(doc, preview=False, word=False):
             if word:
                 # Office HTML uses its legacy math namespace and conditional math islands,
                 # unlike the namespace used inside DOCX. Bare MathML is ignored by older Word.
-                return '<!--[if gte msEquation 12]>' + _office_html_math(latex, display == 'block') + '<![endif]-->'
+                return '<!--[if gte msEquation 12]>' + office_html_math(latex, display == 'block') + '<![endif]-->'
             return mathml(latex, display)
         except Exception as exc:
             if not preview:

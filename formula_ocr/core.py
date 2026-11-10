@@ -7,6 +7,8 @@ import xml.etree.ElementTree as ET
 
 import requests
 from latex2mathml.converter import convert
+from .mathtype import add_mathtype_alignment
+from .word_math import prepare_word_mathml
 
 MATHML_NS = "http://www.w3.org/1998/Math/MathML"
 ET.register_namespace("", MATHML_NS)
@@ -60,7 +62,7 @@ def _preview_math_variants(tree):
             node.set('style', 'font-weight:bold')
 
 
-def _export_mathml(tree):
+def _export_mathml(tree, *, for_word=False):
     """Express styled Unicode letters as MathML 3 variants for older equation editors."""
     ns = {'m': MATHML_NS}
     for table in tree.findall('.//m:mtable', ns):
@@ -81,7 +83,7 @@ def _export_mathml(tree):
                             row.remove(cells.pop(index))
             table.set('columnspacing', ' '.join(spacing))
         if any(cell.get('columnalign') for row in columns for cell in row):
-            # Older importers honor the table-level list but ignore individual cell attributes.
+            # Give Presentation MathML readers the alignment of each column.
             table.set('columnalign', ' '.join(cell.get('columnalign', 'center') for cell in columns[0]))
     for node in list(tree.iter()):
         if node.tag == '{' + MATHML_NS + '}mtext' and '\u00a0' in (node.text or ''):
@@ -119,6 +121,9 @@ def _export_mathml(tree):
                 child.text = text
                 if variant:
                     child.set('mathvariant', variant)
+    add_mathtype_alignment(tree)
+    if for_word:
+        prepare_word_mathml(tree)
     # ASCII XML character references avoid legacy clipboard/decoder ambiguity.
     return ET.tostring(tree, encoding='us-ascii', xml_declaration=False).decode('ascii')
 
@@ -194,14 +199,14 @@ def recognize(png: bytes, base: str, key: str, model: str) -> str:
     return clean_latex(request_content(png, base, key, model, PROMPT, "请识别图片中的数学公式。"))
 
 
-def mathml(latex: str, display: str = "block", *, for_export: bool = False) -> str:
+def mathml(latex: str, display: str = "block", *, for_export: bool = False, for_word: bool = False) -> str:
     latex = clean_latex(latex)
     # latex2mathml supports align*, but not the equivalent embedded aligned environment.
     latex = re.sub(r"\\(begin|end)\{aligned\}", lambda m: "\\" + m[1] + "{align*}", latex)
     result = convert(latex, display=display)
     tree = ET.fromstring(result)  # Reject malformed converter output before preview or clipboard.
-    if for_export:
-        return _export_mathml(tree)
+    if for_export or for_word:
+        return _export_mathml(tree, for_word=for_word)
     _preview_math_variants(tree)
     ns = {"m": MATHML_NS}
     # Chromium's MathML Core uses CSS instead of MathML 3 column alignment/spacing.

@@ -3,12 +3,12 @@ import sys
 from pathlib import Path
 
 import keyring
-from PySide6.QtCore import QBuffer, QIODevice, QSettings, QTemporaryDir, QUrl, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QBuffer, QEvent, QIODevice, QSettings, QSize, QTemporaryDir, QUrl, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QIcon, QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtSvgWidgets import QSvgWidget
 from PySide6.QtWidgets import (QApplication, QCheckBox, QDialog, QDialogButtonBox,
     QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
-    QKeySequenceEdit, QPlainTextEdit, QProgressBar, QScrollArea, QSizePolicy, QSplitter, QSystemTrayIcon, QTabBar, QVBoxLayout, QWidget)
+    QKeySequenceEdit, QPlainTextEdit, QProgressBar, QScrollArea, QSizePolicy, QSpinBox, QSplitter, QSystemTrayIcon, QTabBar, QVBoxLayout, QWidget)
 
 from .core import endpoint, export_text, mathml, recognize
 from .capture import ScreenCapture
@@ -16,9 +16,10 @@ from .clipboard import CODE_FORMATS, COPY_FORMATS, WORD_FORMAT, copy_formula, co
 from .hotkey import DEFAULT_HOTKEY, GlobalHotkey
 from . import autostart
 from .providers import PROVIDERS
-from .preview import create_preview
+from .preview import DEFAULT_MIN_FONT_PX, MIN_FONT_PX, NORMAL_FONT_PX, create_preview, formula_preview_html
 from .theme import (ASSETS, STYLE, ActionButton, FieldSelect, apply_theme, field_map,
                     paper_section, preview_css, theme_colors, tool_icon)
+from .theme_wipe import ThemeWipe
 from .mixed import (MIXED_FORMATS, MIXED_COPY_FORMATS, MIXED_WORD, MIXED_EXAMPLE,
                     from_markdown, to_markdown, to_html, recognize_mixed, save_document)
 
@@ -152,10 +153,14 @@ class PreferencesDialog(QDialog):
             self.autostart.setEnabled(False)
             self.autostart.setToolTip("无法读取开机自启状态：" + str(exc))
         form.addRow(self.autostart)
-        self.close_to_tray = QCheckBox("关闭窗口后驻留系统托盘")
-        self.close_to_tray.setChecked(parent.settings.value("window/close_to_tray", True, type=bool))
-        form.addRow(self.close_to_tray)
-        startup_note = QLabel("开机自启时静默进入托盘，点击托盘图标显示窗口。\n取消常驻后，关闭窗口会退出程序，自启时会显示主窗口。")
+        self.close_action = FieldSelect()
+        for label, action in (("每次询问", "ask"), ("转到后台", "tray"), ("退出程序", "exit")):
+            self.close_action.addItem(label, action)
+        if not parent.settings.value("window/ask_on_close", True, type=bool):
+            action = "tray" if parent.settings.value("window/close_to_tray", True, type=bool) else "exit"
+            self.close_action.setCurrentIndex(self.close_action.findData(action))
+        form.addRow("关闭主窗口时", self.close_action)
+        startup_note = QLabel("在后台运行时，截图快捷键仍然有效。点击系统托盘图标可恢复主窗口。")
         startup_note.setWordWrap(True)
         form.addRow(startup_note)
         self.hotkey = QKeySequenceEdit(QKeySequence(parent.settings.value("capture/hotkey", DEFAULT_HOTKEY)))
@@ -164,6 +169,12 @@ class PreferencesDialog(QDialog):
         help_text = QLabel("点击输入框后按下新组合键，须包含 Ctrl 或 Alt。\n驻留系统托盘时，快捷键仍然有效。\n截图后显示窗口并自动识别；在后台取消截图则保持隐藏。\n按 Esc 或右键取消截图，不会发送图片。")
         help_text.setWordWrap(True)
         form.addRow(help_text)
+        self.min_formula_font = QSpinBox()
+        self.min_formula_font.setRange(MIN_FONT_PX, NORMAL_FONT_PX)
+        self.min_formula_font.setSuffix(" px")
+        self.min_formula_font.setValue(parent.settings.value("preview/min_font_px", DEFAULT_MIN_FONT_PX, type=int))
+        self.min_formula_font.setToolTip("公式会随预览框缩放。达到最小字号后，可滚动查看整条公式。")
+        form.addRow("公式预览最小字号", self.min_formula_font)
         self.auto_copy = QCheckBox("识别成功后自动复制")
         self.auto_copy.setChecked(parent.settings.value("copy/enabled", False, type=bool))
         form.addRow(self.auto_copy)
@@ -210,13 +221,21 @@ class PreferencesDialog(QDialog):
                 parent.update_capture_hint()
             QMessageBox.warning(self, "无法保存开机自启", "请检查 Windows 启动项权限后重试。\n" + str(exc))
             return
-        parent.settings.setValue("window/close_to_tray", self.close_to_tray.isChecked())
+        action = self.close_action.currentData()
+        parent.settings.setValue("window/ask_on_close", action == "ask")
+        if action != "ask":
+            parent.settings.setValue("window/close_to_tray", action == "tray")
         parent.settings.setValue("capture/hotkey", sequence)
         parent.settings.setValue("copy/enabled", self.auto_copy.isChecked())
         parent.settings.setValue("copy/format", self.copy_format.currentText())
         parent.settings.setValue("mixed_copy/enabled", self.mixed_auto_copy.isChecked())
         parent.settings.setValue("mixed_copy/format", self.mixed_copy_format.currentText())
         parent.update_capture_hint()
+        minimum = self.min_formula_font.value()
+        if minimum != parent.settings.value("preview/min_font_px", DEFAULT_MIN_FONT_PX, type=int):
+            parent.settings.setValue("preview/min_font_px", minimum)
+            if parent.active_mode == "formula":
+                parent.render()
         parent.status.setText("使用设置已保存。")
         self.accept()
 
@@ -232,6 +251,7 @@ class ImagePane(QScrollArea):
         self.canvas.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setWidget(self.canvas)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setAcceptDrops(True)
         self.setMinimumHeight(76)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
@@ -258,23 +278,28 @@ class ImagePane(QScrollArea):
     def show_image(self, image):
         self.original = QPixmap.fromImage(image)
         self.refresh()
-        self.verticalScrollBar().setValue(0)
 
     def refresh(self):
         viewport = self.viewport().size()
+        self.canvas.resize(viewport)
         if self.original.isNull():
-            self.canvas.resize(viewport)
             return
         scale = self.devicePixelRatioF()
-        width = min(max(1, round((viewport.width() - 8) * scale)), self.original.width())
-        shown = self.original.scaledToWidth(width, Qt.TransformationMode.SmoothTransformation)
+        bounds = QSize(max(1, round((viewport.width() - 8) * scale)),
+                       max(1, round((viewport.height() - 8) * scale))).boundedTo(self.original.size())
+        shown = self.original.scaled(bounds, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         shown.setDevicePixelRatio(scale)
-        self.canvas.resize(viewport.width(), max(viewport.height(), round(shown.height() / scale) + 8))
         self.canvas.setPixmap(shown)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.refresh()
+
+    def event(self, event):
+        result = super().event(event)
+        if event.type() == QEvent.Type.DevicePixelRatioChange:
+            self.refresh()
+        return result
 
 
 class Window(QMainWindow):
@@ -302,6 +327,7 @@ class Window(QMainWindow):
         self.mixed_assets = {}
         self.preview_temp = None
         self.closing = False
+        self.close_prompt = None
         self.capturing = False
         self.capture = ScreenCapture(self)
         self.capture.completed.connect(self.capture_completed)
@@ -315,6 +341,7 @@ class Window(QMainWindow):
         QApplication.instance().aboutToQuit.connect(self.hotkey.close)
         self.terrain = QSvgWidget()
         self.setCentralWidget(self.terrain)
+        self.theme_wipe = ThemeWipe(self.terrain)
         columns = QHBoxLayout(self.terrain)
         columns.setContentsMargins(14, 32, 14, 14)
         columns.setSpacing(0)
@@ -518,6 +545,8 @@ class Window(QMainWindow):
 
     def quit_application(self):
         self.closing = True
+        if self.close_prompt is not None:
+            self.close_prompt.reject()
         self.hotkey.close()
         self.capture_delay.stop()
         if self.capturing:
@@ -532,7 +561,6 @@ class Window(QMainWindow):
         QApplication.instance().quit()
 
     def eventFilter(self, obj, event):
-        from PySide6.QtCore import QEvent
         if self.isActiveWindow() and event.type() == QEvent.Type.KeyPress and event.matches(QKeySequence.StandardKey.Paste):
             if QApplication.clipboard().mimeData().hasImage():
                 self.paste_image()
@@ -559,6 +587,8 @@ class Window(QMainWindow):
         self.show_main_window()
 
     def apply_appearance(self, night):
+        initial = not hasattr(self, "applied_night")
+        self.applied_night = night
         apply_theme(QApplication.instance(), night)
         self.terrain.load(field_map(night))
         colors = theme_colors(night)
@@ -566,11 +596,29 @@ class Window(QMainWindow):
             ink = "#20221e" if button.objectName() == "primary" else colors["ink"]
             button.setIcon(tool_icon(glyph, ink))
         self.preview.page().setBackgroundColor(QColor(colors["sheet"]))
-        self.render()
+        if initial or not hasattr(self.preview, "set_preview_theme"):
+            self.render()
+        else:
+            self.preview.set_preview_theme(night)
 
     def change_appearance(self, night):
-        self.apply_appearance(night)
         self.settings.setValue("appearance/night", night)
+        self.theme_wipe.stop()
+        if night == self.applied_night:
+            return
+
+        def switch(frame=None):
+            if self.closing or self.night_switch.isChecked() != night or self.applied_night == night:
+                return
+            if self.theme_wipe.can_animate() and (frame is None or not frame.isNull()):
+                self.theme_wipe.cover(self.preview, frame)
+            self.apply_appearance(night)
+            self.theme_wipe.play()
+
+        if self.theme_wipe.can_animate() and hasattr(self.preview, "capture_for_transition"):
+            self.preview.capture_for_transition(switch)
+        else:
+            switch()
 
     def change_mode(self):
         self.mode_drafts[self.active_mode] = self.editor.toPlainText()
@@ -771,7 +819,8 @@ class Window(QMainWindow):
                 body = mathml(text)
             except Exception:
                 body = '<p class="formula-error">暂时无法预览，请检查 LaTeX 语法或转换器是否支持该命令。仍可复制 LaTeX。</p>'
-        self.preview.setHtml('<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'"><style>body{margin:0;min-height:calc(100vh - 28px);display:flex;align-items:center;justify-content:center}p{font:14px sans-serif}math{font-size:27px;font-family:"Cambria Math",serif}' + css + '</style></head><body>' + body + '</body></html>')
+        minimum = self.settings.value("preview/min_font_px", DEFAULT_MIN_FONT_PX, type=int)
+        self.preview.setHtml(formula_preview_html(body, css, minimum))
 
     def copy_code(self):
         try:
@@ -838,10 +887,56 @@ class Window(QMainWindow):
         event.ignore()
         if self.capturing or self.closing:
             return
-        if (not self.settings.value("window/close_to_tray", True, type=bool)
-                or not QSystemTrayIcon.isSystemTrayAvailable()):
+        if not QSystemTrayIcon.isSystemTrayAvailable():
             self.quit_application()
             return
+        if self.settings.value("window/ask_on_close", True, type=bool):
+            self.ask_close_action()
+        elif self.settings.value("window/close_to_tray", True, type=bool):
+            self.hide_to_tray()
+        else:
+            self.quit_application()
+
+    def ask_close_action(self):
+        if self.close_prompt is not None:
+            self.close_prompt.raise_()
+            self.close_prompt.activateWindow()
+            return
+        self.theme_wipe.stop()
+        prompt = QMessageBox(self)
+        prompt.setOption(QMessageBox.Option.DontUseNativeDialog)
+        prompt.setWindowTitle("关闭 Formula OCR")
+        prompt.setText("要将 Formula OCR 转到后台，还是退出程序？")
+        prompt.setInformativeText("转到后台可继续使用截图快捷键，点击系统托盘图标可恢复窗口。")
+        tray = prompt.addButton("转到后台", QMessageBox.ButtonRole.AcceptRole)
+        leave = prompt.addButton("退出程序", QMessageBox.ButtonRole.DestructiveRole)
+        cancel = prompt.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        default = tray if self.settings.value("window/close_to_tray", True, type=bool) else leave
+        default.setObjectName("primary")
+        prompt.setDefaultButton(default)
+        prompt.setEscapeButton(cancel)
+        remember = QCheckBox("记住我的选择")
+        prompt.setCheckBox(remember)
+        self.close_prompt = prompt
+
+        def chosen(_result):
+            self.close_prompt = None
+            choice = prompt.clickedButton()
+            prompt.deleteLater()
+            if self.closing or choice not in (tray, leave):
+                return
+            if remember.isChecked():
+                self.settings.setValue("window/ask_on_close", False)
+                self.settings.setValue("window/close_to_tray", choice == tray)
+            if choice == tray:
+                self.hide_to_tray()
+            else:
+                self.quit_application()
+
+        prompt.finished.connect(chosen)
+        prompt.open()
+
+    def hide_to_tray(self):
         self.hide()
         if not self.tray_notice_shown:
             self.tray_notice_shown = True

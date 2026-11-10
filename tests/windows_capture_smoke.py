@@ -28,6 +28,7 @@ for fmt in original.formats():
 temp = tempfile.TemporaryDirectory(dir='.tmp')
 settings = QSettings(str(Path(temp.name) / 'smoke.ini'), QSettings.Format.IniFormat)
 settings.setValue('capture/hotkey', 'Ctrl+Alt+Shift+F10')
+settings.setValue('window/ask_on_close', False)
 settings.setValue('model', 'mock-vision')
 settings.setValue('base', 'http://localhost:12345/v1')
 settings.setValue('copy/enabled', True)
@@ -95,7 +96,7 @@ def check_preferences():
         dialog = app.activeModalWidget()
         assert isinstance(dialog, PreferencesDialog), 'Tray settings did not open the preferences dialog'
         assert window.isVisible(), 'Tray settings did not restore the main window'
-        assert dialog.close_to_tray.isChecked()
+        assert dialog.close_action.currentData() == 'tray'
         assert dialog.autostart.isEnabled()
         assert dialog.grab().save(str(Path('.tmp') / f'preferences-{backend}.png'))
         preferences_checked = True

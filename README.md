@@ -15,12 +15,12 @@
 
 ## 安装与启动
 
-**当前版本为 [Formula OCR 1.2](https://github.com/sakiii3321/MathFormulas_OCR/releases/tag/v1.2)**，提供两个 Windows 10/11 x64 单文件版本，任选一个即可，两者功能相同，均无需安装 Python。
+**当前版本为 1.3**，提供两个 Windows 10/11 x64 单文件版本，任选一个即可。两个版本均可双击运行，使用同一套识别和导出功能，无需安装 Python。[查看 1.3 发布说明](https://github.com/sakiii3321/MathFormulas_OCR/releases/tag/v1.3)
 
 | 版本与下载 | EXE 大小（约） | 运行依赖与选择建议 |
 | --- | ---: | --- |
-| [WebView2 轻量版](https://github.com/sakiii3321/MathFormulas_OCR/releases/download/v1.2/FormulaOCR-1.2-WebView2-Windows-x64.exe) | 54.8 MiB | 使用系统共享的 WebView2 Runtime；已安装或愿意安装该运行时的用户可选，下载更小 |
-| [完整运行库版](https://github.com/sakiii3321/MathFormulas_OCR/releases/download/v1.2/FormulaOCR-1.2-Full-Windows-x64.exe) | 206.5 MiB | 内置 Python、Qt 和 Qt WebEngine 预览引擎，无需另装 WebView2 Runtime，适合希望下载后直接使用的用户 |
+| [WebView2 轻量版](https://github.com/sakiii3321/MathFormulas_OCR/releases/download/v1.3/FormulaOCR-1.3-WebView2-Windows-x64.exe) | 58.3 MiB | 适合已安装 Microsoft WebView2 Runtime 的电脑，使用系统共享运行库 |
+| [完整运行库版](https://github.com/sakiii3321/MathFormulas_OCR/releases/download/v1.3/FormulaOCR-1.3-Full-Windows-x64.exe) | 210.0 MiB | 内置 Python、Qt 和 Qt WebEngine 预览引擎，适合希望下载后直接使用的用户 |
 
 轻量版需要 [Microsoft WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/#download-section)。缺少时程序会显示安装/修复入口；安装后重新启动即可。表中大小仅为应用下载包，不含共享运行时和使用时产生的缓存。
 
@@ -53,15 +53,17 @@ cd MathFormulas_OCR
 | 公式模式 | 单个公式、矩阵、多行公式 | 裸 LaTeX、行内或块级 LaTeX、`equation` 环境、MathML、Word 公式 |
 | 混合模式 | 自然段、行内公式、独立公式、编号和裁剪插图 | Markdown、LaTeX、HTML、Word 富文本、含可编辑公式的 DOCX |
 
+原图会按比例完整显示在上方展示框内，识别使用原始分辨率。在公式模式下，拖动分隔条或调整窗口大小时，预览会按实际宽高调整字号。常规字号为 27 px，最小字号默认 16 px，可在「使用设置 → 公式预览最小字号」中调整。达到下限后可滚动查看其余部分。
+
 ### 后台截图
 
-默认开启「关闭窗口后驻留系统托盘」。点击窗口右上角的关闭按钮后，程序会驻留 Windows 任务栏右侧的系统托盘，截图快捷键继续有效。后台框选截图后，主窗口会显示并自动识别；按 Esc 或右键取消则保持隐藏，原有内容不变。
+点击主窗口右上角的 ×，可选择「转到后台」或「退出程序」。默认每次询问。勾选「记住我的选择」后会直接执行所选操作，也可以到「使用设置 → 关闭主窗口时」改回「每次询问」。
 
-点击托盘图标可显示主窗口，右键菜单提供「显示主窗口」「截图识别」「使用设置」「退出程序」。常驻时关闭窗口不会中断正在进行的识别；选择「退出程序」后，如有识别请求，会等待请求结束再退出。在「使用设置」中取消常驻后，关闭窗口会退出程序，同样等待当前请求结束。
+转到后台后，进行中的识别会继续，截图快捷键仍然有效。后台框选成功会唤出主窗口并自动识别，按 Esc 或右键取消则保持隐藏。点击托盘图标可恢复窗口，右键菜单也可直接退出。选择「退出程序」时，程序会等待进行中的识别结束后退出。
 
 ### 开机自启
 
-在「使用设置」中勾选「开机自启（登录 Windows 后启动）」并保存。下次登录当前 Windows 账户时，程序会静默进入系统托盘，截图快捷键可直接使用；取消托盘常驻时，自启会显示主窗口。手动双击启动始终显示主窗口。
+在「使用设置」中勾选「开机自启（登录 Windows 后启动）」并保存。默认在下次登录时进入托盘，此时可直接使用截图快捷键。将关闭方式设为「退出程序」后，自启会显示主窗口。手动双击启动始终显示主窗口。
 
 开机自启默认关闭，使用当前用户的 Windows 启动项，无需管理员权限。取消勾选并保存即可移除。完整运行库版、WebView2 轻量版和源码启动均支持，两版共用一个启动项，保存时使用当前运行版本的路径。移动 EXE 或源码目录后，请重新勾选并保存以更新启动路径。系统托盘不可用时会显示主窗口。
 
@@ -94,9 +96,11 @@ $$
 - `\tag{1}` 保存原编号。输出到 Word 时，带编号的公式在段落中居中，编号使用右对齐制表位。
 - 「导出 DOCX」将正文和原生 Word 公式写入文件，导出本身无需安装 Word。不同 Office 版本的粘贴效果可能不同，也可直接使用 DOCX。
 - 插图按模型给出的区域从原图裁剪。导出含插图的 Markdown 或 LaTeX 时，请同时保留生成的 `_assets` 文件夹。
-- 「使用设置」可修改截图快捷键，并为两种识别模式分别指定自动复制格式。左栏的夜间模式开关会记住上次选择。
+- 「使用设置」可修改截图快捷键，并为两种识别模式分别指定自动复制格式。切换左栏的夜间模式开关时，新主题从左下向右上展开。下次启动会沿用上次的主题。
 
-使用 MathType 插件时，选择「MathML」并复制代码，再粘贴到 MathType 公式编辑器。MathML 导出和「复制到 Word」使用兼容的字符与字体样式表示，避免粗体向量字母乱码；软件预览仍保留浏览器所需的对齐样式。
+**在 Word 中编辑公式。** 在公式模式下点击「复制到 Word」后粘贴。安装桌面 MathType 并启用其粘贴提示时，可在弹窗中选择 Word 原生公式（OMML）或 MathType 公式。对于用 `&=` 对齐的多行等式，两种格式都按等号对齐。Word 原生公式会将求和项放入对应的求和号中，避免出现多余的虚线占位框。
+
+如需直接粘贴到 MathType 编辑器，可在输出格式中选择「MathML」并点击「复制代码」。
 
 ## 支持范围
 

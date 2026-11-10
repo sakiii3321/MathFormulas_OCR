@@ -27,6 +27,7 @@ for fmt in original.formats():
     backup.setData(fmt, original.data(fmt))
 settings = QSettings(str(root / 'settings.ini'), QSettings.Format.IniFormat)
 settings.setValue('capture/hotkey', 'Ctrl+Alt+Shift+F10')
+settings.setValue('window/ask_on_close', False)
 settings.setValue('base', 'http://localhost:12345/v1')
 settings.setValue('model', 'mock-vision')
 settings.setValue('mixed_copy/enabled', True)

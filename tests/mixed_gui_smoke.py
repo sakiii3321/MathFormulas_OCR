@@ -21,6 +21,7 @@ for fmt in old.formats():
 temp = tempfile.TemporaryDirectory(dir='.tmp')
 settings = QSettings(str(Path(temp.name) / 'mixed.ini'), QSettings.Format.IniFormat)
 settings.setValue('capture/hotkey', 'Ctrl+Alt+Shift+F10')
+settings.setValue('window/ask_on_close', False)
 settings.setValue('base', 'http://localhost:12345/v1')
 settings.setValue('model', 'mock-vision')
 settings.setValue('mixed_copy/enabled', True)
