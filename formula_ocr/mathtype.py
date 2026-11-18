@@ -1,4 +1,5 @@
-"""Preserve equation alignment when desktop MathType imports Presentation MathML."""
+"""Optional native MathType compatibility, with unchanged Presentation MathML."""
+import copy
 import ctypes
 import string
 import sys
@@ -84,6 +85,57 @@ def _annotation(data):
     return f'MathType@MTEF@5@5@+=\n  {body}@{sum(data) & 0xffff:04X}@'
 
 
+def _compatible_source(math):
+    """Build a private import copy for the legacy desktop MathML translator.
+
+    These substitutions must never reach the portable presentation tree: Word
+    and browsers support the original Unicode characters directly.
+    """
+    source = copy.deepcopy(math)
+    ns = math.tag.removesuffix('math')
+    changed = False
+    aliases = {'\u00b7': '\u22c5', '\u27e8': '\u2329', '\u27e9': '\u232a'}
+    for node in list(source.iter()):
+        if node.tag not in (ns + 'mi', ns + 'mo') or len(node):
+            continue
+        if not node.text and node.tag == ns + 'mo' and node.get('fence') == 'true':
+            # A null delimiter crashes MathType's fence importer. Keep an
+            # empty group so fixed-arity parents retain their argument slots.
+            node.tag, node.attrib = ns + 'mrow', {}
+        elif (node.text in ('\u2016', '\u2225') and node.get('fence') == 'true'
+              and node.get('stretchy') == 'true'):
+            # MathType's legacy translator has no double-bar fence template;
+            # its stretchy path rejects the whole equation (FORMATETC).
+            # Retain both norm characters as fixed-size glyphs in native data.
+            node.set('stretchy', 'false')
+        elif node.text in aliases:
+            node.tag, node.text = ns + 'mo', aliases[node.text]
+        elif node.text == '\u2020':
+            # Times New Roman ANSI runs such as "0\x86" render as "0?" in
+            # Word on a Chinese Windows codepage. Explicit Cambria isolates
+            # the dagger in a supported font. mathvariant overrides fontfamily
+            # in MathType's importer, so retain bold through fontweight instead.
+            variant = node.attrib.pop('mathvariant', '')
+            if 'bold' in variant:
+                node.set('fontweight', 'bold')
+            node.tag = ns + 'mo'
+            node.set('fontfamily', 'Cambria Math')
+            node.set('fontstyle', 'normal')
+        elif node.text in ('\u2aaf', '\u2ab0'):
+            # The old MTCode table lacks these straight-line relations. A
+            # native underbar embellishment keeps that shape; U+227C/U+227D
+            # would incorrectly substitute the curved-line variants.
+            base = '\u227a' if node.text == '\u2aaf' else '\u227b'
+            attributes = dict(node.attrib)
+            node.tag, node.text, node.attrib = ns + 'munder', None, {'accentunder': 'true'}
+            ET.SubElement(node, ns + 'mo', attributes).text = base
+            ET.SubElement(node, ns + 'mo').text = '\u00af'
+        else:
+            continue
+        changed = True
+    return source, changed
+
+
 @lru_cache(maxsize=8)
 def _native_alignment(left_xml, right_xml, rows):
     import pythoncom
@@ -94,7 +146,8 @@ def _native_alignment(left_xml, right_xml, rows):
     if status < 0 and status != -2147417850:  # RPC_E_CHANGED_MODE: already initialized.
         return None
     try:
-        data = _relation_pile(_native_equation(left_xml), _native_equation(right_xml), rows)
+        data = (_relation_pile(_native_equation(left_xml), _native_equation(right_xml), rows)
+                if right_xml is not None else _native_equation(left_xml))
         return _annotation(data) if data else None
     finally:
         if status >= 0:
@@ -104,21 +157,25 @@ def _native_alignment(left_xml, right_xml, rows):
 def add_mathtype_alignment(math):
     if sys.platform != 'win32':
         return
-    lines = _equation_lines(math)
-    if lines is None:
+    source, changed = _compatible_source(math)
+    lines = _equation_lines(source)
+    if lines is None and not changed:
         return
     ns = math.tag.removesuffix('math')
-    source = ET.Element(math.tag, math.attrib)
-    source.append(lines)
+    if lines is not None:
+        source = ET.Element(math.tag, math.attrib)
+        source.append(lines)
     left_xml = ET.tostring(source, encoding='us-ascii', xml_declaration=False).decode('ascii')
-    lines.set('columnalign', 'right')
-    right_xml = ET.tostring(source, encoding='us-ascii', xml_declaration=False).decode('ascii')
+    right_xml = None
+    if lines is not None:
+        lines.set('columnalign', 'right')
+        right_xml = ET.tostring(source, encoding='us-ascii', xml_declaration=False).decode('ascii')
     try:
         import pywintypes
     except ImportError:
         return
     try:
-        annotation = _native_alignment(left_xml, right_xml, len(lines))
+        annotation = _native_alignment(left_xml, right_xml, len(lines) if lines is not None else 0)
     except (pywintypes.com_error, pywintypes.error, ImportError):
         # MathType is optional. Word and other readers use Presentation MathML.
         return

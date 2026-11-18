@@ -6,7 +6,8 @@ from urllib.parse import urlsplit
 import xml.etree.ElementTree as ET
 
 import requests
-from latex2mathml.converter import convert
+from .mathml_normalize import convert_mathml
+from .prompts import formula_prompt
 from .mathtype import add_mathtype_alignment
 from .word_math import prepare_word_mathml
 
@@ -196,14 +197,15 @@ def request_content(png: bytes, base: str, key: str, model: str, prompt: str, in
 
 
 def recognize(png: bytes, base: str, key: str, model: str) -> str:
-    return clean_latex(request_content(png, base, key, model, PROMPT, "请识别图片中的数学公式。"))
+    prompt = formula_prompt(base, model, PROMPT)
+    return clean_latex(request_content(png, base, key, model, prompt, "请识别图片中的数学公式。"))
 
 
 def mathml(latex: str, display: str = "block", *, for_export: bool = False, for_word: bool = False) -> str:
     latex = clean_latex(latex)
     # latex2mathml supports align*, but not the equivalent embedded aligned environment.
     latex = re.sub(r"\\(begin|end)\{aligned\}", lambda m: "\\" + m[1] + "{align*}", latex)
-    result = convert(latex, display=display)
+    result = convert_mathml(latex, display=display, for_preview=not (for_export or for_word))
     tree = ET.fromstring(result)  # Reject malformed converter output before preview or clipboard.
     if for_export or for_word:
         return _export_mathml(tree, for_word=for_word)
@@ -216,7 +218,7 @@ def mathml(latex: str, display: str = "block", *, for_export: bool = False, for_
         for row in table.findall("m:mtr", ns):
             cells = row.findall("m:mtd", ns)
             for index, cell in enumerate(cells):
-                styles = []
+                styles = [part for part in cell.get('style', '').split(';') if part]
                 alignment = cell.get("columnalign")
                 if alignment in ("left", "center", "right"):
                     styles.append("text-align:" + alignment)

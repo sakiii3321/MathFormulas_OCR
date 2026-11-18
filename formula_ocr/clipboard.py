@@ -16,20 +16,18 @@ def copy_formula(latex, kind):
     markup = mathml(latex, for_word=True)
     mime = QMimeData()
     mime.setText(markup)
-    if '<malignmark' in markup:
-        from .mixed import office_html_math
-        # Browsers render the two physical columns; Word gets an editable equation array.
-        browser = mathml(latex)
-        try:
-            office = office_html_math(latex, True)
-            rich = ('<!--[if gte msEquation 12]>' + office + '<![endif]-->'
-                    '<!--[if !msEquation]><!-->' + browser + '<!--<![endif]-->')
-        except ValueError:
-            rich = browser
-        mime.setHtml('<html xmlns:m="http://schemas.microsoft.com/office/2004/12/omml"><body>'
-                     + rich + '</body></html>')
-    else:
-        mime.setHtml('<html><body>' + markup + '</body></html>')
+    from .mixed import office_html_math
+    # Word's HTML importer flattens many valid MathML expressions to plain text.
+    # Supply native equations for every formula, including single-line formulas.
+    browser = mathml(latex) if '<malignmark' in markup else markup
+    try:
+        office = office_html_math(latex, True)
+        rich = ('<!--[if gte msEquation 12]>' + office + '<![endif]-->'
+                '<!--[if !msEquation]><!-->' + browser + '<!--<![endif]-->')
+    except ValueError:
+        rich = browser
+    mime.setHtml('<html xmlns:m="http://schemas.microsoft.com/office/2004/12/omml"><body>'
+                 + rich + '</body></html>')
     mime.setData('application/mathml+xml', QByteArray(markup.encode("utf-8")))
     office_data = QByteArray((markup + '\0').encode('utf-16-le'))
     for name in ('MathML', 'MathML Presentation'):

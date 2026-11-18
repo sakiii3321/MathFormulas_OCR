@@ -205,6 +205,27 @@ def test_manual_and_automatic_word_copy_include_the_same_alignment(window):
         assert bytes(mime.data('application/mathml+xml')) == auto.encode('ascii')
 
 
+@pytest.mark.parametrize('index', range(3))
+def test_single_line_word_copy_contains_native_math_and_mathtype_payload(window, index):
+    from test_mathtype import FLOW_FORMULAS
+
+    window.settings.setValue('copy/enabled', True)
+    window.settings.setValue('copy/format', WORD_FORMAT)
+    window.got_result(FLOW_FORMULAS[index])
+    automatic = APP.clipboard().mimeData().html()
+    window.copy_word()
+    mime = APP.clipboard().mimeData()
+    assert automatic == mime.html()
+    assert '<m:oMath>' in automatic and '<!--[if gte msEquation 12]>' in automatic
+    assert 'http://schemas.microsoft.com/office/2004/12/omml' in automatic
+    assert '<mfrac>' in mime.text()
+    assert bytes(mime.data('application/mathml+xml')).decode('utf-8') == mime.text()
+    if index == 1:
+        assert '<m:acc>' in automatic
+    if index == 2:
+        assert '<m:bar>' in automatic
+
+
 def test_conversion_failure_preserves_clipboard_and_result(window):
     APP.clipboard().setText('previous')
     window.settings.setValue('copy/enabled', True)

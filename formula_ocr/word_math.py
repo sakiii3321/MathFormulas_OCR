@@ -39,6 +39,13 @@ _NARY = frozenset('∑∏∐∫∬∭∮∯∰⋀⋁⋂⋃⨀⨁⨂⨄⨆')
 _OPEN = frozenset('([{⟨⌊⌈')
 _CLOSE = frozenset(')]}⟩⌋⌉')
 _BOUNDARIES = frozenset('+-−±∓=≠≈∼≃≡<>≤≥∈∉⊂⊃⊆⊇→←↔,;:.')
+_ACCENTS = {'~': '\u0303', '^': '\u0302', '˙': '\u0307', '¨': '\u0308',
+            '¯': '\u0305', '―': '\u0305', '→': '\u20d7', '←': '\u20d6',
+            '↔': '\u20e1', 'ˇ': '\u030c', '˘': '\u0306', '´': '\u0301',
+            '`': '\u0300', '˚': '\u030a'}
+_GROUP_CHARS = frozenset('⏞⏟⏜⏝⎴⎵')
+_LOWER_BARS = frozenset(('¯', '―', '\u0305', '\u0332'))
+_LOWER_ARROWS = frozenset('←→↔')
 
 
 def _operator(node):
@@ -88,7 +95,8 @@ def _group_operands(math):
 
 def prepare_word_mathml(math, *, for_omml=False):
     for over in math.iter(ML + 'mover'):
-        if len(over) == 2 and over[1].tag == ML + 'mo' and over[1].text == '~':
+        if (len(over) == 2 and over[1].tag == ML + 'mo' and over[1].text == '~'
+                and over.get('accent') != 'false' and over[1].get('accent') != 'false'):
             # latex2mathml writes a spacing tilde; Office needs a combining accent.
             over.set('accent', 'true')
             over[1].text = '\u0303'
@@ -114,10 +122,74 @@ def prepare_word_mathml(math, *, for_omml=False):
     return True
 
 
+def _prepare_decorations(math):
+    # mathml2omml emits a mismatched closing tag for stretchy accents. Route
+    # these through its valid limit objects, then attach the decoration below.
+    for node in list(math.iter()):
+        if node.tag not in (ML + 'mover', ML + 'munder') or len(node) != 2:
+            continue
+        mark = node[1]
+        if mark.tag != ML + 'mo':
+            continue
+        accent_attr = 'accent' if node.tag == ML + 'mover' else 'accentunder'
+        if node.get(accent_attr) == 'false' or mark.get('accent') == 'false':
+            # An explicit non-accent is an ordinary limit, even if its glyph is
+            # normally an accent. A row also prevents accidental reconstruction.
+            row = ET.Element(ML + 'mrow')
+            row.append(mark)
+            node[1] = row
+            continue
+        char = mark.text
+        if node.tag == ML + 'mover':
+            char = _ACCENTS.get(char, char)
+            handled = char in _ACCENTS.values() or char in _GROUP_CHARS
+        else:
+            handled = char in _LOWER_BARS or char in _LOWER_ARROWS or char in _GROUP_CHARS
+        if handled:
+            mark.text = char
+            mark.set('stretchy', 'false')
+
+
+def _restore_decorations(wrapper):
+    for node in list(wrapper.iter()):
+        if node.tag not in (OM + 'limUpp', OM + 'limLow'):
+            continue
+        char = node.findtext(OM + 'lim/' + OM + 'r/' + OM + 't')
+        position = 'top' if node.tag == OM + 'limUpp' else 'bot'
+        if position == 'top' and char in _ACCENTS.values():
+            kind = 'bar' if char == '\u0305' else 'acc'
+        elif position == 'bot' and char in _LOWER_BARS:
+            kind = 'bar'
+        elif char in _GROUP_CHARS or (position == 'bot' and char in _LOWER_ARROWS):
+            kind = 'groupChr'
+        else:
+            continue
+        base = node.find(OM + 'e')
+        node.clear()
+        node.tag = OM + kind
+        props = ET.SubElement(node, OM + kind + 'Pr')
+        if kind != 'bar':
+            ET.SubElement(props, OM + 'chr', {OM + 'val': char})
+        if kind != 'acc':
+            ET.SubElement(props, OM + 'pos', {OM + 'val': position})
+        if kind == 'groupChr':
+            # Keep the base on the baseline and the brace outside it. In
+            # particular, an overbrace needs bot justification, not the default.
+            ET.SubElement(props, OM + 'vertJc',
+                          {OM + 'val': 'bot' if position == 'top' else 'top'})
+        node.append(base)
+
+
 def native_omml(math):
     import mathml2omml
 
     aligned = prepare_word_mathml(math, for_omml=True)
+    _prepare_decorations(math)
+    for fraction in math.iter(ML + 'mfrac'):
+        # latex2mathml uses unitless zero for binomials. mathml2omml only
+        # recognises zero followed by a unit when emitting a noBar fraction.
+        if fraction.get('linethickness', '').strip() == '0':
+            fraction.set('linethickness', '0pt')
     content = mathml2omml.convert(ET.tostring(math, encoding='unicode'))
     wrapper = ET.fromstring('<root xmlns:m="' + OM[1:-1] + '">' + content + '</root>')
     if aligned:
@@ -133,14 +205,6 @@ def native_omml(math):
             slot = nary.find(OM + limit)
             if slot is not None and not len(slot):
                 ET.SubElement(props, OM + limit + 'Hide', {OM + 'val': '1'})
-    # mathml2omml treats even an explicitly marked tilde as an upper limit.
-    for over in wrapper.iter(OM + 'limUpp'):
-        if over.findtext(OM + 'lim/' + OM + 'r/' + OM + 't') == '\u0303':
-            base = over.find(OM + 'e')
-            over.clear()
-            over.tag = OM + 'acc'
-            props = ET.SubElement(over, OM + 'accPr')
-            ET.SubElement(props, OM + 'chr', {OM + 'val': '\u0303'})
-            over.append(base)
+    _restore_decorations(wrapper)
     # DOCX and Office HTML provide different namespaces for these same m: tags.
     return ET.tostring(wrapper, encoding='unicode', short_empty_elements=True).split('>', 1)[1][:-len('</root>')]

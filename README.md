@@ -80,6 +80,8 @@ cd MathFormulas_OCR
 
 **密钥和图片。** 默认仅在当前进程中使用密钥。勾选记住密钥后，程序通过 keyring 保存到 Windows 凭据管理器。识别会把当前图片发送给所选服务商，计费和数据处理规则以该服务商为准。
 
+源码中的 DeepSeek 官方 Flash 公式模式使用经过真实 API 对比的严格转录规则；矩阵、重音和 MathType 符号兼容在本地完成，不额外调用模型。识别仍需核对，尤其是上点数量、语义字体和原式分式结构。详见[调优记录与验证范围](docs/ocr-tuning.md)和[未发布更新](CHANGELOG.md)；Release 1.3 的 EXE 尚未包含这些源码改进。
+
 ## 编辑与导出
 
 混合模式用空行分段，行内公式用 `$…$`，独立公式前后的 `$$` 各占一行。例如：
@@ -132,7 +134,7 @@ Windows 桌面集成测试使用模拟 OCR，并在结束后恢复剪贴板：
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install pytest
-.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m pytest tests -q
 .\build.cmd
 ```
 

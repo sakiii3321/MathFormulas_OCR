@@ -20,6 +20,15 @@ LOSSES = r"""\begin{aligned}
 \sum_{(i,j)\in\Omega_{\Delta}}(\Delta_{xz}\tilde{e})_{i,j}^{2}.
 \end{aligned}"""
 
+FLOW_FORMULAS = [
+    r'\frac{\mathrm{d}p}{\mathrm{d}s}+\rho u\frac{\mathrm{d}u}{\mathrm{d}s}'
+    r'=-\frac{f_D\rho u|u|}{2D_h}-\mathcal{L}_{\text{local}}.',
+    r"\frac{\mathrm{d}}{\mathrm{d}s}\left(h+\frac{u^2}{2}\right)=\frac{q'}{\dot{m}_c},",
+    r'J=w_a\frac{\overline{T}_{w,A}-T_{\text{in}}}{T_{w,\text{lim}}-T_{\text{in}}}'
+    r'+w_p\frac{T_{w,\text{max}}-T_{\text{in}}}{T_{w,\text{lim}}-T_{\text{in}}}'
+    r'+w_h\frac{\Delta p}{\Delta p_{\text{ref}}}.',
+]
+
 
 def portable(latex):
     with patch('formula_ocr.core.add_mathtype_alignment'):
@@ -72,6 +81,36 @@ def test_missing_mathtype_preserves_export():
 
 def native(latex):
     return ET.fromstring('<root xmlns:m="' + OM[1:-1] + '">' + to_omml(latex) + '</root>')
+
+
+@pytest.mark.parametrize('latex,char', [
+    (r'\dot{m}', '\u0307'), (r'\ddot{x}', '\u0308'),
+    (r'\hat{x}', '\u0302'), (r'\tilde{x}', '\u0303'), (r'\vec{v}', '\u20d7'),
+])
+def test_native_accents_attach_to_the_base(latex, char):
+    result = native(latex)
+    accent = result.find('.//{*}acc')
+    assert accent.find('{*}accPr/{*}chr').get(OM + 'val') == char
+    assert ''.join(accent.find('{*}e').itertext()) == latex[-2]
+    assert result.find('.//{*}limUpp') is None
+
+
+@pytest.mark.parametrize('command', [r'\bar', r'\overline'])
+def test_native_bar_is_an_attached_line(command):
+    result = native(command + r'{T}_{w,\text{in}}')
+    subscript = result.find('.//{*}sSub')
+    bar = subscript.find('.//{*}bar')
+    assert bar.find('{*}barPr/{*}pos').get(OM + 'val') == 'top'
+    assert ''.join(bar.find('{*}e').itertext()) == 'T'
+    assert ''.join(subscript.find('{*}sub').itertext()) == 'w,in'
+    assert result.find('.//{*}limUpp') is None
+
+
+def test_accents_preserve_nested_bases_and_actual_upper_limits():
+    result = native(r'\overline{\dot{m}_c}+\overset{n}{x}+\sum^{N}_{i=1}x_i')
+    assert result.find('.//{*}bar/{*}e//{*}acc') is not None
+    assert result.findtext('.//{*}limUpp/{*}lim//{*}t') == 'n'
+    assert ''.join(result.find('.//{*}nary/{*}sup').itertext()) == 'N'
 
 
 @pytest.mark.parametrize('latex', [LOSSES, LOSSES.replace('&=', '=&')])
