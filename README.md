@@ -15,14 +15,14 @@
 
 ## 安装与启动
 
-**当前版本为 1.3**，提供两个 Windows 10/11 x64 单文件版本，任选一个即可。两个版本均可双击运行，使用同一套识别和导出功能，无需安装 Python。[查看 1.3 发布说明](https://github.com/sakiii3321/MathFormulas_OCR/releases/tag/v1.3)
+**当前版本为 1.4**，支持 Windows 10/11 x64。两种单文件 EXE 均可直接双击启动，识别和导出功能相同。[查看 1.4 发布说明](https://github.com/sakiii3321/MathFormulas_OCR/releases/tag/v1.4)
 
-| 版本与下载 | EXE 大小（约） | 运行依赖与选择建议 |
+| 版本与下载 | EXE 大小 | 如何选择 |
 | --- | ---: | --- |
-| [WebView2 轻量版](https://github.com/sakiii3321/MathFormulas_OCR/releases/download/v1.3/FormulaOCR-1.3-WebView2-Windows-x64.exe) | 58.3 MiB | 适合已安装 Microsoft WebView2 Runtime 的电脑，使用系统共享运行库 |
-| [完整运行库版](https://github.com/sakiii3321/MathFormulas_OCR/releases/download/v1.3/FormulaOCR-1.3-Full-Windows-x64.exe) | 210.0 MiB | 内置 Python、Qt 和 Qt WebEngine 预览引擎，适合希望下载后直接使用的用户 |
+| [WebView2 轻量版](https://github.com/sakiii3321/MathFormulas_OCR/releases/download/v1.4/FormulaOCR-1.4-WebView2-Windows-x64.exe) | 58.4 MiB | 已安装 Microsoft WebView2 Runtime 时选此版本，使用系统共享的预览引擎 |
+| [完整运行库版](https://github.com/sakiii3321/MathFormulas_OCR/releases/download/v1.4/FormulaOCR-1.4-Full-Windows-x64.exe) | 210.1 MiB | 希望随程序一并下载预览引擎时选此版本，内置 Qt WebEngine |
 
-轻量版需要 [Microsoft WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/#download-section)。缺少时程序会显示安装/修复入口；安装后重新启动即可。表中大小仅为应用下载包，不含共享运行时和使用时产生的缓存。
+轻量版首次启动时若提示缺少预览运行库，可按提示安装后重启程序。[下载 Microsoft WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/#download-section)
 
 下载 EXE 后双击启动。首次使用在「API 设置」中配置视觉模型，也可先点击「查看示例」体验预览和导出。单文件版启动时会展开内置组件，请稍候。**两个版本的 OCR 都使用你配置的模型 API，完整运行库版不包含离线识别模型。**
 
@@ -80,7 +80,9 @@ cd MathFormulas_OCR
 
 **密钥和图片。** 默认仅在当前进程中使用密钥。勾选记住密钥后，程序通过 keyring 保存到 Windows 凭据管理器。识别会把当前图片发送给所选服务商，计费和数据处理规则以该服务商为准。
 
-源码中的 DeepSeek 官方 Flash 公式模式使用经过真实 API 对比的严格转录规则；矩阵、重音和 MathType 符号兼容在本地完成，不额外调用模型。识别仍需核对，尤其是上点数量、语义字体和原式分式结构。详见[调优记录与验证范围](docs/ocr-tuning.md)和[未发布更新](CHANGELOG.md)；Release 1.3 的 EXE 尚未包含这些源码改进。
+1.4 的公式模式为 DeepSeek 官方 Flash 启用严格转录规则，要求模型保留截图中的分式、字体、重音和运算符。矩阵、重音及 MathType 的符号转换在本地完成。
+
+在 156 例调优样本上，识别通过数由 145 提高到 148。随后从 NIST《数字数学函数库》抽取 100 个未参与调优的印刷公式，首次返回的 LaTeX 有 94 例与原图一致，92 例的 LaTeX、MathML、Word 原生公式和 MathType 四种输出均通过逐图核验。[测试方法与逐格式结果](docs/ocr-tuning.md)
 
 ## 编辑与导出
 
